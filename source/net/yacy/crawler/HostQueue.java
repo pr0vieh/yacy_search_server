@@ -34,9 +34,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Queue;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -79,6 +81,7 @@ public class HostQueue implements Balancer {
     private final boolean       exceed134217727;
     private final boolean       onDemand;
     private final NavigableMap<Integer, Index> depthStacks;
+    private final NavigableMap<Long, Queue<Request>> waitingQueue; // requests waiting for crawl delay to expire (key=availableAtTime)
 
     /**
      * Create or open host queue. The host part of the hostUrl parameter is used
@@ -115,6 +118,7 @@ public class HostQueue implements Balancer {
             this.hostPath = new File(hostsPath, this.hostName + "-#"+ this.hostHash + "." + this.port);
         }
         this.depthStacks = new ConcurrentSkipListMap<>();
+        this.waitingQueue = new ConcurrentSkipListMap<>();
         this.init();
     }
 
@@ -156,6 +160,7 @@ public class HostQueue implements Balancer {
             this.hostHash = filename.substring(p1+2,pdot);
         } else throw new RuntimeException("hostPath name must contain -# followd by hosthash: " + filename);
         this.depthStacks = new ConcurrentSkipListMap<>();
+        this.waitingQueue = new ConcurrentSkipListMap<>();
         this.init();
     }
 
@@ -298,6 +303,7 @@ public class HostQueue implements Balancer {
             if (size == 0) deletedelete(this.getFile(entry.getKey()));
         }
         this.depthStacks.clear();
+        this.waitingQueue.clear(); // Clear waiting queue
         final String[] l = this.hostPath.list();
         if ((l == null || l.length == 0) && this.hostPath != null) deletedelete(this.hostPath);
     }
@@ -311,6 +317,7 @@ public class HostQueue implements Balancer {
             deletedelete(this.getFile(key));
             this.depthStacks.remove(key);
         }
+        this.waitingQueue.clear(); // Clear waiting queue
         final String[] l = this.hostPath.list();
         if (l != null) for (final String s: l) {
             deletedelete(new File(this.hostPath, s));
@@ -415,6 +422,10 @@ public class HostQueue implements Balancer {
         for (final Index depthStack: this.depthStacks.values()) {
             size += depthStack.size();
         }
+        // Also count requests in waiting queue
+        for (final Queue<Request> waitingRequests: this.waitingQueue.values()) {
+            size += waitingRequests.size();
+        }
         return size;
     }
 
@@ -422,6 +433,10 @@ public class HostQueue implements Balancer {
     public boolean isEmpty() {
         for (final Index depthStack: this.depthStacks.values()) {
             if (!depthStack.isEmpty()) return false;
+        }
+        // Also check if waiting queue is empty
+        for (final Queue<Request> waitingRequests: this.waitingQueue.values()) {
+            if (!waitingRequests.isEmpty()) return false;
         }
         return true;
     }
@@ -458,6 +473,40 @@ public class HostQueue implements Balancer {
     @Override
     public Request pop(final boolean delay, final CrawlSwitchboard cs, final RobotsTxt robots) throws IOException {
         // returns a crawl entry from the stack and ensures minimum delta times
+        
+        // First, check if any waiting requests have completed their delay
+        final long now = System.currentTimeMillis();
+        synchronized (this) {
+            final Iterator<Map.Entry<Long, Queue<Request>>> waitIter = this.waitingQueue.entrySet().iterator();
+            while (waitIter.hasNext()) {
+                final Map.Entry<Long, Queue<Request>> entry = waitIter.next();
+                if (entry.getKey() <= now) {
+                    // This waiting request's delay has expired, move it back to depthStack
+                    final Queue<Request> requests = entry.getValue();
+                    if (!requests.isEmpty()) {
+                        final Request req = requests.poll();
+                        if (req != null) {
+                            // Re-add to depthStack at appropriate depth
+                            try {
+                                final Index depthStack = this.getStack(req.depth());
+                                depthStack.put(req.toRow());
+                                if (log.isFine()) log.fine("Requeued request after crawl delay for " + req.url().getHost());
+                            } catch (final IOException e) {
+                                if (log.isFine()) log.fine("Error requeuing request: " + e.getMessage());
+                            } catch (final SpaceExceededException e) {
+                                if (log.isFine()) log.fine("SpaceExceeded requeuing request: " + e.getMessage());
+                            }
+                        }
+                    }
+                    if (requests.isEmpty()) {
+                        waitIter.remove();
+                    }
+                } else {
+                    break; // all remaining entries are still waiting (map is sorted)
+                }
+            }
+        }
+        
         long sleeptime = 0;
         Request crawlEntry = null;
         CrawlProfile profileEntry = null;
@@ -497,28 +546,44 @@ public class HostQueue implements Balancer {
         final long robotsTime = Latency.getRobotsTime(robots, crawlEntry.url(), agent);
         Latency.updateAfterSelection(crawlEntry.url(), profileEntry == null ? 0 : robotsTime);
 
-        // the following case should be avoided by selection previously
+        // Configurable delay threshold: if crawl delay exceeds threshold, queue for later instead of blocking
+        // Default threshold is 1 second (1000 ms); if delay > threshold, store in waitingQueue
+        final int delayThreshold = 1000; // milliseconds - can be made configurable later
+        
         if (delay && sleeptime > 0) {
-            // force a busy waiting here
-            // in best case, this should never happen if the balancer works properly
-            // this is only to protection against the worst case, where the crawler could
-            // behave in a DoS-manner
-            if (log.isInfo()) log.info("forcing crawl-delay of " + sleeptime + " milliseconds for " + crawlEntry.url().getHost() + ": " + Latency.waitingRemainingExplain(crawlEntry.url(), robots, agent));
-            long loops = sleeptime / 1000;
-            long rest = sleeptime % 1000;
-            if (loops < 3) {
-                rest = rest + 1000 * loops;
-                loops = 0;
+            // Check if delay exceeds threshold
+            if (sleeptime > delayThreshold) {
+                // Instead of blocking, store request in waiting queue for later retry
+                final long availableAtTime = now + sleeptime;
+                synchronized (this) {
+                    Queue<Request> waitingRequests = this.waitingQueue.get(availableAtTime);
+                    if (waitingRequests == null) {
+                        waitingRequests = new LinkedList<>();
+                        this.waitingQueue.put(availableAtTime, waitingRequests);
+                    }
+                    waitingRequests.add(crawlEntry);
+                    if (log.isInfo()) log.info("Delaying crawl for " + crawlEntry.url().getHost() + " by queuing request (delay: " + sleeptime + " ms > threshold: " + delayThreshold + " ms). Will retry at " + (availableAtTime - now) + " ms.");
+                }
+                return null; // Return null so balancer tries next host
+            } else {
+                // For short delays (< threshold), use the traditional blocking approach
+                if (log.isInfo()) log.info("forcing crawl-delay of " + sleeptime + " milliseconds for " + crawlEntry.url().getHost() + ": " + Latency.waitingRemainingExplain(crawlEntry.url(), robots, agent));
+                long loops = sleeptime / 1000;
+                long rest = sleeptime % 1000;
+                if (loops < 3) {
+                    rest = rest + 1000 * loops;
+                    loops = 0;
+                }
+                final String tname = Thread.currentThread().getName();
+                Thread.currentThread().setName("Balancer waiting for " + crawlEntry.url().getHost() + ": " + sleeptime + " milliseconds");
+                if (rest > 0) {try {Thread.sleep(rest);} catch (final InterruptedException e) {}}
+                for (int i = 0; i < loops; i++) {
+                    if (log.isInfo()) log.info("waiting for " + crawlEntry.url().getHost() + ": " + (loops - i) + " seconds remaining...");
+                    try {Thread.sleep(1000); } catch (final InterruptedException e) {}
+                }
+                Thread.currentThread().setName(tname); // restore the name so we do not see this in the thread dump as a waiting thread
+                Latency.updateAfterSelection(crawlEntry.url(), robotsTime);
             }
-            final String tname = Thread.currentThread().getName();
-            Thread.currentThread().setName("Balancer waiting for " + crawlEntry.url().getHost() + ": " + sleeptime + " milliseconds");
-            if (rest > 0) {try {Thread.sleep(rest);} catch (final InterruptedException e) {}}
-            for (int i = 0; i < loops; i++) {
-                if (log.isInfo()) log.info("waiting for " + crawlEntry.url().getHost() + ": " + (loops - i) + " seconds remaining...");
-                try {Thread.sleep(1000); } catch (final InterruptedException e) {}
-            }
-            Thread.currentThread().setName(tname); // restore the name so we do not see this in the thread dump as a waiting thread
-            Latency.updateAfterSelection(crawlEntry.url(), robotsTime);
         }
         return crawlEntry;
     }
