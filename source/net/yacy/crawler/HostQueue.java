@@ -481,21 +481,30 @@ public class HostQueue implements Balancer {
             while (waitIter.hasNext()) {
                 final Map.Entry<Long, Queue<Request>> entry = waitIter.next();
                 if (entry.getKey() <= now) {
-                    // This waiting request's delay has expired, move it back to depthStack
+                    // This waiting request's delay has expired, return it directly
                     final Queue<Request> requests = entry.getValue();
                     if (!requests.isEmpty()) {
                         final Request req = requests.poll();
+                        if (requests.isEmpty()) {
+                            waitIter.remove();
+                        }
                         if (req != null) {
-                            // Re-add to depthStack at appropriate depth
-                            try {
-                                final Index depthStack = this.getStack(req.depth());
-                                depthStack.put(req.toRow());
-                                if (log.isFine()) log.fine("Requeued request after crawl delay for " + req.url().getHost());
-                            } catch (final IOException e) {
-                                if (log.isFine()) log.fine("Error requeuing request: " + e.getMessage());
-                            } catch (final SpaceExceededException e) {
-                                if (log.isFine()) log.fine("SpaceExceeded requeuing request: " + e.getMessage());
+                            // Verify request is still valid (profile exists, not blacklisted)
+                            if (Switchboard.urlBlacklist.isListed(BlacklistType.CRAWLER, req.url())) {
+                                if (log.isFine()) log.fine("URL '" + req.url() + "' is in blacklist after delay.");
+                                continue; // Check next waiting request
                             }
+                            final CrawlProfile profileEntry = cs.get(UTF8.getBytes(req.profileHandle()));
+                            if (profileEntry == null) {
+                                if (log.isFine()) log.fine("no profile entry for handle " + req.profileHandle() + " after delay");
+                                continue; // Check next waiting request
+                            }
+                            // Delay has been honored, return request directly
+                            if (log.isFine()) log.fine("Returning request after crawl delay for " + req.url().getHost());
+                            final ClientIdentification.Agent agent = profileEntry.getAgent();
+                            final long robotsTime = Latency.getRobotsTime(robots, req.url(), agent);
+                            Latency.updateAfterSelection(req.url(), robotsTime);
+                            return req;
                         }
                     }
                     if (requests.isEmpty()) {
