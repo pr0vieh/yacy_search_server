@@ -146,5 +146,11 @@ public interface Balancer {
      * @throws IOException
      */
     public Iterator<Request> iterator() throws IOException;
+    
+    /**
+     * Get total size of all waiting queues (requests delayed due to crawl-delay)
+     * @return total count of delayed requests
+     */
+    public int getTotalWaitingQueueSize();
 
 }

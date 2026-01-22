@@ -77,6 +77,15 @@
             <td align="right"><span id="loaderqueuesize">#[loaderSize]#</span></td>
             <td>&nbsp;</td>
           </tr>
+          <tr class="TableCellLight" title="Requests delayed waiting for crawl-delay to expire"> 
+            <td align="left">Waiting Queue</td>
+            <td align="right"><span id="waitingqueuesize">#[waitingQueueSize]#</span></td>
+            <td>
+              <a href="" id="waitingqueuestateA">
+                <img src="" alt="" style="width:12px; height:12px;" id="waitingqueuestateIMG" />
+              </a>
+            </td>
+          </tr>
         </tbody>
       </table>
       #(terminate-button)#::

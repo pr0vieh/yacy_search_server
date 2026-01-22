@@ -134,6 +134,10 @@ public class Crawler_p {
         final int limitCrawlJobSize = sb.crawlQueues.limitCrawlJobSize();
         final int remoteTriggeredCrawlJobSize = sb.crawlQueues.remoteTriggeredCrawlJobSize();
         final int noloadCrawlJobSize = sb.crawlQueues.noloadCrawlJobSize();
+        
+        // Get waiting queue size from noticeURL
+        final int waitingQueueSize = sb.crawlQueues.noticeURL.getTotalWaitingQueueSize();
+        
         final int allsize = coreCrawlJobSize + limitCrawlJobSize + remoteTriggeredCrawlJobSize + noloadCrawlJobSize;
 
         prop.put("localCrawlSize", coreCrawlJobSize);
@@ -144,6 +148,8 @@ public class Crawler_p {
         prop.put("remoteCrawlState", "");
         prop.put("noloadCrawlSize", noloadCrawlJobSize);
         prop.put("noloadCrawlState", "");
+        prop.put("waitingQueueSize", waitingQueueSize);
+        prop.put("waitingQueueState", "");
         prop.put("terminate-button", allsize == 0 ? 0 : 1);
         prop.put("list-remote", 0);
         prop.put("forwardToCrawlStart", "0");

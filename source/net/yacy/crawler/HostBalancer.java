@@ -562,7 +562,11 @@ public class HostBalancer implements Balancer {
         final Map<String, Integer[]> map = new TreeMap<>(); // we use a tree map to get a stable ordering
         for (final HostQueue hq: this.queues.values()) {
             final int delta = Latency.waitingRemainingGuessed(hq.getHost(), hq.getPort(), hq.getHostHash(), robots, unknwonAgentDefault);
-            map.put(hq.getHost() + ":" + hq.getPort(), new Integer[]{hq.size(), delta});
+            final int waitingQueueSize = hq.getWaitingQueueSize();
+            final int totalQueueSize = hq.size();
+            final int activeQueueSize = totalQueueSize - waitingQueueSize; // requests not yet delayed
+            // Return: {total_size, delta_time, waiting_queue_size, active_queue_size}
+            map.put(hq.getHost() + ":" + hq.getPort(), new Integer[]{totalQueueSize, delta, waitingQueueSize, activeQueueSize});
         }
         return map;
     }
@@ -587,6 +591,18 @@ public class HostBalancer implements Balancer {
             ConcurrentLog.logException(e);
             return Collections.emptyList();
         }
+    }
+    
+    /**
+     * Get total size of all waiting queues (requests delayed due to crawl-delay)
+     * @return total count of delayed requests across all hosts
+     */
+    public int getTotalWaitingQueueSize() {
+        int total = 0;
+        for (final HostQueue hq: this.queues.values()) {
+            total += hq.getWaitingQueueSize();
+        }
+        return total;
     }
 
 }

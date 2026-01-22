@@ -694,5 +694,35 @@ public class HostQueue implements Balancer {
     public boolean getExceed134217727() {
         return this.exceed134217727;
     }
+    
+    /**
+     * Get the size of the waiting queue (requests delayed due to crawl-delay)
+     * @return number of requests currently in the waiting queue
+     */
+    public int getWaitingQueueSize() {
+        int size = 0;
+        for (final Queue<Request> waitingRequests: this.waitingQueue.values()) {
+            size += waitingRequests.size();
+        }
+        return size;
+    }
+    
+    /**
+     * Get statistics about waiting queue fill state
+     * @return array with {waiting_queue_size, max_queue_size, total_delayed_timestamps}
+     */
+    public int[] getWaitingQueueStats() {
+        int totalSize = 0;
+        int timestampCount = 0;
+        synchronized (this) {
+            for (final Queue<Request> waitingRequests: this.waitingQueue.values()) {
+                totalSize += waitingRequests.size();
+            }
+            timestampCount = this.waitingQueue.size();
+        }
+        return new int[]{totalSize, 1000, timestampCount}; // {size, max (MAX_WAITING_QUEUE_SIZE), active_time_buckets}
+    }
 
 }
+
+

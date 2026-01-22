@@ -367,5 +367,19 @@ public class NoticedURL {
             return new HashSet<Request>().iterator();
         }
     }
+    
+    /**
+     * Get total size of all waiting queues across all host balancers
+     * (requests delayed waiting for crawl-delay to expire)
+     * @return total count of waiting requests
+     */
+    public int getTotalWaitingQueueSize() {
+        int total = 0;
+        if (this.coreStack != null) total += this.coreStack.getTotalWaitingQueueSize();
+        if (this.limitStack != null) total += this.limitStack.getTotalWaitingQueueSize();
+        if (this.remoteStack != null) total += this.remoteStack.getTotalWaitingQueueSize();
+        if (this.noloadStack != null) total += this.noloadStack.getTotalWaitingQueueSize();
+        return total;
+    }
 
 }
