@@ -156,7 +156,7 @@ public class Segment {
         if (this.termIndex != null) return;
 
         if (this.merger == null) { // init shared iodispatcher if none running
-            this.merger = new IODispatcher(2, 2, writeBufferSize);
+            this.merger = new IODispatcher(8, 16, writeBufferSize);
             this.merger.start();
         }
         this.termIndex = new IndexCell<WordReference>(
@@ -186,7 +186,7 @@ public class Segment {
         if (this.urlCitationIndex != null) return;
 
         if (this.merger == null) { // init shared iodispatcher if none running
-            this.merger = new IODispatcher(2,2,writeBufferSize);
+            this.merger = new IODispatcher(8, 16, writeBufferSize);
             this.merger.start();
         }
         this.urlCitationIndex = new IndexCell<CitationReference>(
