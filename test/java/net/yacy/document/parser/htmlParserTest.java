@@ -89,20 +89,13 @@ public class htmlParserTest {
             System.out.println("parse file: " + filename);
 
             htmlParser p = new htmlParser();
-            FileInputStream inStream = null;
-            try {
-            	inStream = new FileInputStream(file);
-            	
+            try (final FileInputStream inStream = new FileInputStream(file)) {
                 final Document[] docs = p.parse(url, mimetype, null, new VocabularyScraper(), 0, inStream);
 
                 Document doc = docs[0];
                 String txt = doc.getCharset();
                 assertTrue("get Charset", txt != null);
                 System.out.println("detected charset = " + txt);
-            } finally {
-            	if(inStream != null) {
-            		inStream.close();
-            	}
             }
         }
     }

@@ -1212,47 +1212,51 @@ public class RasterPlotter {
         final int height = image.getHeight(null);
 
         final Deflater scrunch = new Deflater(compressionLevel);
-        ByteBuffer outBytes = new ByteBuffer(1024 * 400); // avoid frequent resizing of the ByteBuffer
-        final OutputStream compBytes = new BufferedOutputStream(new DeflaterOutputStream(outBytes, scrunch, 2048, false), 16384);
-        int i = 0;
-        for (int row = 0; row < height; row++) {
-            compBytes.write(0);
-            // this replaces the whole PixelGrabber process which makes it probably more than 800x faster. See http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=4835595
-            compBytes.write(frame, i, 3 * width);
-            i += 3 * width;
-        }
-        compBytes.close();
-        scrunch.finish();
+        try {
+            ByteBuffer outBytes = new ByteBuffer(1024 * 400); // avoid frequent resizing of the ByteBuffer
+            try (final OutputStream compBytes = new BufferedOutputStream(new DeflaterOutputStream(outBytes, scrunch, 2048, false), 16384)) {
+                int i = 0;
+                for (int row = 0; row < height; row++) {
+                    compBytes.write(0);
+                    // this replaces the whole PixelGrabber process which makes it probably more than 800x faster. See http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=4835595
+                    compBytes.write(frame, i, 3 * width);
+                    i += 3 * width;
+                }
+            }
+            scrunch.finish();
 
-        // finally write the result of the concurrent calculation into an DeflaterOutputStream to compress the png
-        final int nCompressed = outBytes.length();
-        final byte[] png = new byte[nCompressed + 57]; // yes thats the exact size, not too less, not too much. No resizing needed.
-        int next = writeBytes(png, new byte[]{-119, 80, 78, 71, 13, 10, 26, 10}, 0);
-        final int startPos = next = writeInt4(png, 13, next);
-        next = writeBytes(png, IHDR, next);
-        next = writeInt4(png, width, next);
-        next = writeInt4(png, height, next);
-        next = writeBytes(png, new byte[]{8, 2, 0, 0, 0}, next);
-        final CRC32 crc = new CRC32();
-        crc.reset();
-        crc.update(png, startPos, next - startPos);
-        next = writeInt4(png, (int) crc.getValue(), next);
-        crc.reset();
-        next = writeInt4(png, nCompressed, next);
-        next = writeBytes(png, IDAT, next);
-        crc.update(IDAT);
-        outBytes.copyTo(png, next);
-        outBytes.close();
-        outBytes = null;
-        crc.update(png, next, nCompressed);
-        next += nCompressed;
-        next = writeInt4(png, (int) crc.getValue(), next);
-        next = writeInt4(png, 0, next);
-        next = writeBytes(png, IEND, next);
-        crc.reset();
-        crc.update(IEND);
-        next = writeInt4(png, (int) crc.getValue(), next);
-        return png;
+            // finally write the result of the concurrent calculation into an DeflaterOutputStream to compress the png
+            final int nCompressed = outBytes.length();
+            final byte[] png = new byte[nCompressed + 57]; // yes thats the exact size, not too less, not too much. No resizing needed.
+            int next = writeBytes(png, new byte[]{-119, 80, 78, 71, 13, 10, 26, 10}, 0);
+            final int startPos = next = writeInt4(png, 13, next);
+            next = writeBytes(png, IHDR, next);
+            next = writeInt4(png, width, next);
+            next = writeInt4(png, height, next);
+            next = writeBytes(png, new byte[]{8, 2, 0, 0, 0}, next);
+            final CRC32 crc = new CRC32();
+            crc.reset();
+            crc.update(png, startPos, next - startPos);
+            next = writeInt4(png, (int) crc.getValue(), next);
+            crc.reset();
+            next = writeInt4(png, nCompressed, next);
+            next = writeBytes(png, IDAT, next);
+            crc.update(IDAT);
+            outBytes.copyTo(png, next);
+            outBytes.close();
+            outBytes = null;
+            crc.update(png, next, nCompressed);
+            next += nCompressed;
+            next = writeInt4(png, (int) crc.getValue(), next);
+            next = writeInt4(png, 0, next);
+            next = writeBytes(png, IEND, next);
+            crc.reset();
+            crc.update(IEND);
+            next = writeInt4(png, (int) crc.getValue(), next);
+            return png;
+        } finally {
+            scrunch.end();
+        }
     }
 
     private final static int writeInt4(final byte[] target, final int n, int pos) {

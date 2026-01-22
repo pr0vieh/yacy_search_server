@@ -385,7 +385,7 @@ public class HostBalancer implements Balancer {
                     if (this.roundRobinHostHashes.size() == 1) {
                         if (log.isFine()) log.fine("(re-)initialized the round-robin queue with one host");
                     } else {
-                        log.info("(re-)initialized the round-robin queue; " + this.roundRobinHostHashes.size() + " hosts.");
+                        if (log.isFine()) log.fine("(re-)initialized the round-robin queue; " + this.roundRobinHostHashes.size() + " hosts.");
                     }
                 }
                 if (this.roundRobinHostHashes.size() == 0) return null;

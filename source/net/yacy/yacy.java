@@ -192,19 +192,19 @@ public final class yacy {
 
             f = new File(dataHome, "DATA/yacy.running");
             if (!f.createNewFile()) ConcurrentLog.severe("STARTUP", "WARNING: the file " + f + " can not be created!");
-            try {
-            	final FileOutputStream fos = new FileOutputStream(f);
+            try (
+                final FileOutputStream fos = new FileOutputStream(f)
+            ) {
             	fos.write(Integer.toString(OS.getPID()).getBytes());
-            	fos.close();
             } catch (final Exception e) { } // write PID
             f.deleteOnExit();
             FileChannel channel = null;
             FileLock lock = null;
             try {
-            	final RandomAccessFile raf = new RandomAccessFile(f,"rw");
-                channel = raf.getChannel();
-                lock = channel.tryLock(); // lock yacy.running
-                raf.close();
+            	try (final RandomAccessFile raf = new RandomAccessFile(f,"rw")) {
+                    channel = raf.getChannel();
+                    lock = channel.tryLock(); // lock yacy.running
+                }
             } catch (final Exception e) { }
 
             final String conf = "DATA/SETTINGS/yacy.conf".replace("/", File.separator);
@@ -341,18 +341,12 @@ public final class yacy {
                 for (final String tmplang : langlist) {
                     if (!tmplang.equals("") && !tmplang.equals("default") && !tmplang.equals("browser")) { //locale is used
                         String currentRev = null;
-                        BufferedReader br = null;
-                        try {
-                            br = new BufferedReader(new InputStreamReader(new FileInputStream(new File(sb.getDataPath("locale.translated_html", "DATA/LOCALE/htroot"), tmplang + "/version"))));
+                        try (
+                            final BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(new File(sb.getDataPath("locale.translated_html", "DATA/LOCALE/htroot"), tmplang + "/version"))))
+                        ) {
                             currentRev = br.readLine(); // may return null
                         } catch (final IOException e) {
                             //Error
-                        } finally {
-                            try {
-                                br.close();
-                            } catch(final IOException ioe) {
-                                ConcurrentLog.warn("STARTUP", "Could not close " + tmplang + " version file");
-                            }
                         }
 
                         if (currentRev == null || !currentRev.equals(sb.getConfig(Seed.VERSION, ""))) {
@@ -361,9 +355,11 @@ public final class yacy {
                                 final File destDir = new File(sb.getDataPath("locale.translated_html", "DATA/LOCALE/htroot"), tmplang);
                                 if (new TranslatorXliff().translateFilesRecursive(sourceDir, destDir, new File(locale_source, tmplang + ".lng"), "html,template,inc", "locale")) { //translate it
                                     //write the new Versionnumber
-                                    final BufferedWriter bw = new BufferedWriter(new PrintWriter(new FileWriter(new File(destDir, "version"))));
-                                    bw.write(sb.getConfig(Seed.VERSION, "Error getting Version"));
-                                    bw.close();
+                                    try (
+                                        final BufferedWriter bw = new BufferedWriter(new FileWriter(new File(destDir, "version")))
+                                    ) {
+                                        bw.write(sb.getConfig(Seed.VERSION, "Error getting Version"));
+                                    }
                                 }
                             } catch (final IOException e) {
                             }
@@ -470,9 +466,9 @@ public final class yacy {
         }
 
         final Properties config = new Properties();
-        FileInputStream fis = null;
-        try {
-            fis  = new FileInputStream(new File(homePath, "DATA/SETTINGS/yacy.conf"));
+        try (
+            final FileInputStream fis = new FileInputStream(new File(homePath, "DATA/SETTINGS/yacy.conf"))
+        ) {
             config.load(fis);
         } catch (final FileNotFoundException e) {
             ConcurrentLog.severe(mes, "could not find configuration file.");
@@ -480,14 +476,6 @@ public final class yacy {
         } catch (final IOException e) {
             ConcurrentLog.severe(mes, "could not read configuration file.");
             System.exit(-1);
-        } finally {
-            if(fis != null) {
-                try {
-                    fis.close();
-                } catch (final IOException e) {
-                    ConcurrentLog.logException(e);
-                }
-            }
         }
 
         return config;
@@ -645,9 +633,9 @@ public final class yacy {
 
         if (configFile.exists()) {
             final Properties p = new Properties();
-            FileInputStream fis = null;
-            try {
-                fis = new FileInputStream(configFile);
+            try (
+                final FileInputStream fis = new FileInputStream(configFile)
+            ) {
                 p.load(fis);
 
                 // test for yacy already running
@@ -674,12 +662,6 @@ public final class yacy {
                 System.err.println(configFile.getAbsolutePath());
                 ConcurrentLog.logException(ex);
                 ConcurrentLog.severe("Startup", "cannot read " + configFile.toString() + ", please delete the corrupted file if problem persits");
-            } finally {
-                try {
-                    fis.close();
-                } catch (final IOException e) {
-                    ConcurrentLog.warn("Startup", "Could not close file " + configFile);
-                }
             }
         }
     }

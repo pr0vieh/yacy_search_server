@@ -153,12 +153,12 @@ public class CryptoLib {
         privKeyBuffer.close();
 		PrivateKey privKey = cl.getPrivateKeyFromBytes(privKeyByteBuffer);
 
-		FileInputStream dataStream = new FileInputStream(args[2]);
-
-		byte[] signBuffer = cl.getSignature(privKey, dataStream);
-		FileWriter signFile = new FileWriter(args[2] + ".sig");
-		signFile.write(Base64Order.standardCoder.encode(signBuffer));
-		signFile.close();
+		try (final FileInputStream dataStream = new FileInputStream(args[2])) {
+			byte[] signBuffer = cl.getSignature(privKey, dataStream);
+			try (final FileWriter signFile = new FileWriter(args[2] + ".sig")) {
+				signFile.write(Base64Order.standardCoder.encode(signBuffer));
+			}
+		}
 	    } else if(args[0].equals("--verify") && args.length==3) {
 		CryptoLib cl = new CryptoLib();
 		CharBuffer pubKeyBuffer = new CharBuffer(new File(args[1]));
@@ -166,16 +166,16 @@ public class CryptoLib {
 		pubKeyBuffer.close();
 		PublicKey pubKey = cl.getPublicKeyFromBytes(pubKeyByteBuffer);
 
-		FileInputStream dataStream = new FileInputStream(args[2]);
-
-		CharBuffer signBuffer = new CharBuffer(new File(args[2] + ".sig"));
-		byte[] signByteBuffer = Base64Order.standardCoder.decode(signBuffer.toString().trim());
-		signBuffer.close();
-		if(cl.verifySignature(pubKey, dataStream, signByteBuffer)) {
-		    System.out.println("Signature OK!");
-		} else {
-		    System.out.println("Signature FALSE!!!!!!!!!!!");
-		    System.exit(1);
+		try (final FileInputStream dataStream = new FileInputStream(args[2])) {
+			CharBuffer signBuffer = new CharBuffer(new File(args[2] + ".sig"));
+			byte[] signByteBuffer = Base64Order.standardCoder.decode(signBuffer.toString().trim());
+			signBuffer.close();
+			if(cl.verifySignature(pubKey, dataStream, signByteBuffer)) {
+			    System.out.println("Signature OK!");
+			} else {
+			    System.out.println("Signature FALSE!!!!!!!!!!!");
+			    System.exit(1);
+			}
 		}
 
 	    } else if(args[0].equals("--gen-key") && args.length==3) {
@@ -183,15 +183,15 @@ public class CryptoLib {
 
 		KeyPair kp = cl.genKeyPair();
 
-		FileWriter privFile = new FileWriter(args[1]);
-		privFile.write(Base64Order.standardCoder.encode(
-			cl.getBytesOfPrivateKey(kp.getPrivate())));
-		privFile.close();
+		try (final FileWriter privFile = new FileWriter(args[1])) {
+			privFile.write(Base64Order.standardCoder.encode(
+				cl.getBytesOfPrivateKey(kp.getPrivate())));
+		}
 
-		FileWriter pubFile = new FileWriter(args[2]);
-		pubFile.write(Base64Order.standardCoder.encode(
-			cl.getBytesOfPublicKey(kp.getPublic())));
-		pubFile.close();
+		try (final FileWriter pubFile = new FileWriter(args[2])) {
+			pubFile.write(Base64Order.standardCoder.encode(
+				cl.getBytesOfPublicKey(kp.getPublic())));
+		}
 	    }
 
 	} catch (final FileNotFoundException e) {

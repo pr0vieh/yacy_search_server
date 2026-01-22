@@ -48,32 +48,15 @@ public class Gzip {
     private final static ConcurrentLog logger = new ConcurrentLog("GZIP");
 
     public static void gzipFile(final String inFile, final String outFile) {
-    	InputStream fin = null;
-    	OutputStream fout = null;
-    	try {
-    		fin  = new BufferedInputStream(new FileInputStream(inFile));
-    		fout = new GZIPOutputStream(new BufferedOutputStream(new FileOutputStream(outFile)), 65536){{def.setLevel(Deflater.BEST_COMPRESSION);}};
+    	try (
+    		final InputStream fin = new BufferedInputStream(new FileInputStream(inFile));
+    		final OutputStream fout = new GZIPOutputStream(new BufferedOutputStream(new FileOutputStream(outFile)), 65536){{def.setLevel(Deflater.BEST_COMPRESSION);}}
+    	) {
     		copy(fout, fin, 1024);
-
     	} catch (final FileNotFoundException e) {
     		logger.warn("ERROR: file '" + inFile + "' not found", e);
     	} catch (final IOException e) {
             logger.warn("ERROR: IO trouble ",e);
-    	} finally {
-    		if(fin != null) {
-    			try {
-    				fin.close();
-    			} catch(IOException e) {
-    				logger.warn("ERROR: Could not close file " + inFile);
-    			}
-    		}
-    		if(fout != null) {
-    			try {
-    				fout.close();
-    			} catch(IOException e) {
-    				logger.warn("ERROR: Could not close file " + outFile);
-    			}
-    		}
     	}
     }
 
@@ -159,9 +142,9 @@ public class Gzip {
     }
 
     public static byte[] loadGzip(final File f) throws IOException {
-        java.util.zip.GZIPInputStream gzipin = null;
-        try {
-            gzipin = new java.util.zip.GZIPInputStream(new FileInputStream(f));
+        try (
+            final java.util.zip.GZIPInputStream gzipin = new java.util.zip.GZIPInputStream(new FileInputStream(f))
+        ) {
             byte[] result = new byte[1024];
             final byte[] buffer = new byte[512];
             byte[] b;
@@ -179,13 +162,10 @@ public class Gzip {
                 System.arraycopy(buffer, 0, result, len, last);
                 len += last;
             }
-            gzipin.close();
             // finished with reading. now cut the result to the right size
             b = new byte[len];
             System.arraycopy(result, 0, b, 0, len);
             return b;
-        } finally {
-            if (gzipin != null) try{gzipin.close();}catch(final Exception e){}
         }
     }
 

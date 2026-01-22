@@ -185,22 +185,14 @@ public class TranslationManager extends TranslatorXliff {
                 if (checkfile.exists()) { // include in master only if file exists
                     // load content to compare translation text is included
                     StringBuilder content = new StringBuilder();
-                    BufferedReader br = null;
-                    try {
-                        br = new BufferedReader(new InputStreamReader(new FileInputStream(checkfile), StandardCharsets.UTF_8));
+                    try (
+                        final BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(checkfile), StandardCharsets.UTF_8))
+                    ) {
                         String line = null;
                         while ((line = br.readLine()) != null) {
                             content.append(line).append(net.yacy.server.serverCore.CRLF_STRING);
                         }
                     } catch (final IOException e) {
-                    } finally {
-                        if (br != null) {
-                            try {
-                                br.close();
-                            } catch (final Exception e) {
-                            	ConcurrentLog.fine("TRANSLATOR", "Could not close buffered reader on file " + checkfile);
-                            }
-                        }
                     }
 
                     // compare translation list

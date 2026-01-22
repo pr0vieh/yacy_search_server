@@ -53,20 +53,9 @@ public class PKCS12Tool {
         // creating PKCS12 keystore
         this.kspkcs12 = KeyStore.getInstance("PKCS12");
         
-        FileInputStream fileIn = null;
-        try {
-        	// load pkcs12 file into keystore object
-        	fileIn = new FileInputStream(pkcs12FileName);
+        // load pkcs12 file into keystore object
+        try (final FileInputStream fileIn = new FileInputStream(pkcs12FileName)) {
         	this.kspkcs12.load(fileIn,(pkcs12Pwd!=null)?pkcs12Pwd.toCharArray():null);
-        } finally {
-        	if(fileIn != null) {
-        		try {
-        			// close stream
-        			fileIn.close();
-        		} catch(IOException ioe) {
-        			System.err.println("Could not close file " + pkcs12FileName);
-        		}
-        	}
         }
     }
     
@@ -86,25 +75,16 @@ public class PKCS12Tool {
         final KeyStore jks=KeyStore.getInstance("JKS");
         
         // loading keystore from file        
-        FileInputStream jksFileIn = null;
         final File jksFile = new File(jksName);
-                
+        
         if (jksFile.exists()) {
             System.err.println("Loading java keystore from file '" + jksFile + "'");
-            jksFileIn = new FileInputStream(jksFile); 
-        } else{
+            try (final FileInputStream jksFileIn = new FileInputStream(jksFile)) {
+                jks.load(jksFileIn,(jksPassword!=null)?jksPassword.toCharArray():null);
+            }
+        } else {
             System.err.println("Creating new java keystore '" + jksFile + "'");
-        }
-        try {
-        	jks.load(jksFileIn,(jksPassword!=null)?jksPassword.toCharArray():null);
-        } finally {
-        	if (jksFileIn != null) {
-        		try {
-        			jksFileIn.close();
-        		} catch(IOException ioe) {
-        			System.err.println("Error while closing input stream on file " + jksFile);
-        		}
-        	}
+            jks.load(null,(jksPassword!=null)?jksPassword.toCharArray():null);
         }
          
         final Enumeration<String> pkcs12Aliases = aliases();
@@ -126,18 +106,8 @@ public class PKCS12Tool {
         
         // storing jdk into file
         System.err.print("Storing java keystore");
-        FileOutputStream jksFileOut = null;
-        try {
-        	jksFileOut = new FileOutputStream(jksName);
+        try (final FileOutputStream jksFileOut = new FileOutputStream(jksName)) {
         	jks.store(jksFileOut,(jksPassword!=null)?jksPassword.toCharArray():null);
-        } finally {
-        	if(jksFileOut != null) {
-        		try {
-        			jksFileOut.close();
-        		} catch(IOException ioe) {
-        			System.err.println("Could not close file " + jksFileOut);
-        		}
-        	}
         }
         System.err.print("Import finished.");
     }
