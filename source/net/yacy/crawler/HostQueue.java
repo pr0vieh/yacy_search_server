@@ -722,7 +722,11 @@ public class HostQueue implements Balancer {
         }
         return new int[]{totalSize, 1000, timestampCount}; // {size, max (MAX_WAITING_QUEUE_SIZE), active_time_buckets}
     }
+    
+    @Override
+    public int getTotalWaitingQueueSize() {
+        // For HostQueue, this is the same as getWaitingQueueSize
+        return getWaitingQueueSize();
+    }
 
 }
-
-

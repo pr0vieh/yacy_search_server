@@ -643,5 +643,11 @@ public class LegacyBalancer implements Balancer {
     public int removeAllByHostHashes(Set<String> hosthashes) {
         return 0;
     }
+    
+    @Override
+    public int getTotalWaitingQueueSize() {
+        // LegacyBalancer does not use waiting queues
+        return 0;
+    }
 
 }
