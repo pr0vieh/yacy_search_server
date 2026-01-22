@@ -73,6 +73,7 @@ public class HostQueue implements Balancer {
     public  static final String indexSuffix           = ".stack";
     private static final int    EcoFSBufferSize       = 1000;
     private static final int    objectIndexBufferSize = 1000;
+    private static final int    MAX_WAITING_QUEUE_SIZE = 1000; // max requests in waiting queue per host
 
     private final File          hostPath; // path to the stack files
     private final String        hostName;
@@ -562,21 +563,36 @@ public class HostQueue implements Balancer {
         if (delay && sleeptime > 0) {
             // Check if delay exceeds threshold
             if (sleeptime > delayThreshold) {
-                // Instead of blocking, store request in waiting queue for later retry
-                final long availableAtTime = now + sleeptime;
+                // Check waiting queue size limit to prevent memory overflow
+                int waitingQueueSize = 0;
                 synchronized (this) {
-                    Queue<Request> waitingRequests = this.waitingQueue.get(availableAtTime);
-                    if (waitingRequests == null) {
-                        waitingRequests = new LinkedList<>();
-                        this.waitingQueue.put(availableAtTime, waitingRequests);
+                    for (final Queue<Request> waitingRequests: this.waitingQueue.values()) {
+                        waitingQueueSize += waitingRequests.size();
                     }
-                    waitingRequests.add(crawlEntry);
-                    if (log.isFine()) log.fine("Delaying crawl for " + crawlEntry.url().getHost() + " by queuing request (delay: " + sleeptime + " ms > threshold: " + delayThreshold + " ms). Will retry at " + (availableAtTime - now) + " ms.");
                 }
-                return null; // Return null so balancer tries next host
-            } else {
-                // For short delays (< threshold), use the traditional blocking approach
-                if (log.isFine()) log.fine("forcing crawl-delay of " + sleeptime + " milliseconds for " + crawlEntry.url().getHost() + ": " + Latency.waitingRemainingExplain(crawlEntry.url(), robots, agent));
+                
+                if (waitingQueueSize >= MAX_WAITING_QUEUE_SIZE) {
+                    // Waiting queue is full, fall back to blocking delay to enforce crawl-delay
+                    if (log.isFine()) log.fine("Waiting queue full (" + waitingQueueSize + " >= " + MAX_WAITING_QUEUE_SIZE + "), falling back to blocking delay for " + crawlEntry.url().getHost());
+                    // Fall through to blocking delay below
+                } else {
+                    // Instead of blocking, store request in waiting queue for later retry
+                    final long availableAtTime = now + sleeptime;
+                    synchronized (this) {
+                        Queue<Request> waitingRequests = this.waitingQueue.get(availableAtTime);
+                        if (waitingRequests == null) {
+                            waitingRequests = new LinkedList<>();
+                            this.waitingQueue.put(availableAtTime, waitingRequests);
+                        }
+                        waitingRequests.add(crawlEntry);
+                        if (log.isFine()) log.fine("Delaying crawl for " + crawlEntry.url().getHost() + " by queuing request (delay: " + sleeptime + " ms > threshold: " + delayThreshold + " ms). Will retry at " + (availableAtTime - now) + " ms. Queue size: " + (waitingQueueSize + 1) + "/" + MAX_WAITING_QUEUE_SIZE);
+                    }
+                    return null; // Return null so balancer tries next host
+                }
+            }
+            
+            // For short delays (< threshold) or when waiting queue is full, use traditional blocking approach
+            if (log.isFine()) log.fine("forcing crawl-delay of " + sleeptime + " milliseconds for " + crawlEntry.url().getHost() + ": " + Latency.waitingRemainingExplain(crawlEntry.url(), robots, agent));
                 long loops = sleeptime / 1000;
                 long rest = sleeptime % 1000;
                 if (loops < 3) {
@@ -592,7 +608,6 @@ public class HostQueue implements Balancer {
                 }
                 Thread.currentThread().setName(tname); // restore the name so we do not see this in the thread dump as a waiting thread
                 Latency.updateAfterSelection(crawlEntry.url(), robotsTime);
-            }
         }
         return crawlEntry;
     }
