@@ -567,7 +567,7 @@ public class HostQueue implements Balancer {
                 return null; // Return null so balancer tries next host
             } else {
                 // For short delays (< threshold), use the traditional blocking approach
-                if (log.isInfo()) log.info("forcing crawl-delay of " + sleeptime + " milliseconds for " + crawlEntry.url().getHost() + ": " + Latency.waitingRemainingExplain(crawlEntry.url(), robots, agent));
+                if (log.isFine()) log.fine("forcing crawl-delay of " + sleeptime + " milliseconds for " + crawlEntry.url().getHost() + ": " + Latency.waitingRemainingExplain(crawlEntry.url(), robots, agent));
                 long loops = sleeptime / 1000;
                 long rest = sleeptime % 1000;
                 if (loops < 3) {
@@ -578,7 +578,7 @@ public class HostQueue implements Balancer {
                 Thread.currentThread().setName("Balancer waiting for " + crawlEntry.url().getHost() + ": " + sleeptime + " milliseconds");
                 if (rest > 0) {try {Thread.sleep(rest);} catch (final InterruptedException e) {}}
                 for (int i = 0; i < loops; i++) {
-                    if (log.isInfo()) log.info("waiting for " + crawlEntry.url().getHost() + ": " + (loops - i) + " seconds remaining...");
+                    if (log.isFine()) log.fine("waiting for " + crawlEntry.url().getHost() + ": " + (loops - i) + " seconds remaining...");
                     try {Thread.sleep(1000); } catch (final InterruptedException e) {}
                 }
                 Thread.currentThread().setName(tname); // restore the name so we do not see this in the thread dump as a waiting thread
