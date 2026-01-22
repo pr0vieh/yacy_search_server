@@ -69,6 +69,12 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** The default value whether to delete on Recrawl */
     public static final boolean DEFAULT_DELETE_ON_RECRAWL = false;
 
+    /** Default maximum URLs to add per recrawl batch to remote crawler queue */
+    public static final int DEFAULT_MAX_REMOTE_URLS_PER_BATCH = 100;
+
+    /** Default maximum size for remote triggered crawler queue */
+    public static final int DEFAULT_MAX_REMOTE_QUEUE_SIZE = 500;
+
     /** The current query selecting documents to recrawl */
     private String currentQuery;
 
@@ -77,6 +83,12 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
     /** flag whether to delete on Recrawl */
     private boolean deleteOnRecrawl;
+
+    /** Maximum URLs to add per batch to remote crawler queue */
+    private int maxRemoteUrlsPerBatch = DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
+
+    /** Maximum size for remote triggered crawler queue before pausing recrawl */
+    private int maxRemoteQueueSize = DEFAULT_MAX_REMOTE_QUEUE_SIZE;
 
     private int chunkstart = 0;
     private final int chunksize = 100;
@@ -124,6 +136,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
      *            (success) must be included
      */
     public RecrawlBusyThread(final Switchboard xsb, final String query, final boolean includeFailed, final boolean deleteOnRecrawl) {
+        this(xsb, query, includeFailed, deleteOnRecrawl, DEFAULT_MAX_REMOTE_URLS_PER_BATCH, DEFAULT_MAX_REMOTE_QUEUE_SIZE);
+    }
+
+    public RecrawlBusyThread(final Switchboard xsb, final String query, final boolean includeFailed, final boolean deleteOnRecrawl,
+            final int maxRemoteUrlsPerBatch, final int maxRemoteQueueSize) {
         super(3000, 1000); // set lower limits of cycle delay
         this.setName(THREAD_NAME);
         this.setIdleSleep(10*60000); // set actual cycle delays
@@ -134,6 +151,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         this.currentQuery = query;
         this.includefailed = includeFailed;
         this.deleteOnRecrawl = deleteOnRecrawl;
+        this.maxRemoteUrlsPerBatch = Math.max(10, maxRemoteUrlsPerBatch);
+        this.maxRemoteQueueSize = Math.max(100, maxRemoteQueueSize);
         this.urlstack = new HashSet<>();
         // workaround to prevent solr exception on existing index (not fully reindexed) since intro of schema with docvalues
         // org.apache.solr.core.SolrCore java.lang.IllegalStateException: unexpected docvalues type NONE for field 'load_date_dt' (expected=NUMERIC). Use UninvertingReader or index with docvalues.
@@ -199,6 +218,22 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         return this.deleteOnRecrawl;
     }
 
+    public void setMaxRemoteUrlsPerBatch(final int maxUrls) {
+        this.maxRemoteUrlsPerBatch = Math.max(10, maxUrls);
+    }
+
+    public int getMaxRemoteUrlsPerBatch() {
+        return this.maxRemoteUrlsPerBatch;
+    }
+
+    public void setMaxRemoteQueueSize(final int maxSize) {
+        this.maxRemoteQueueSize = Math.max(100, maxSize);
+    }
+
+    public int getMaxRemoteQueueSize() {
+        return this.maxRemoteQueueSize;
+    }
+
     /**
      * feed urls to the local crawler
      * (Switchboard.addToCrawler() is not used here, as there existing urls are always skipped)
@@ -250,6 +285,15 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         // more than chunksize crawls are running, do nothing
         if (this.sb.crawlQueues.coreCrawlJobSize() > this.chunksize) {
             return false;
+        }
+
+        // Check remote triggered crawler queue size - pause if it exceeds threshold
+        final int remoteQueueSize = this.sb.crawlQueues.remoteTriggeredCrawlJobSize();
+        if (remoteQueueSize >= this.maxRemoteQueueSize) {
+            /* Remote queue is too full, wait until it drains to 20% */
+            if (remoteQueueSize > (this.maxRemoteQueueSize / 5)) {
+                return false;
+            }
         }
 
         boolean didSomething = false;
