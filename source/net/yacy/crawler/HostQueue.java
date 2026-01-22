@@ -562,7 +562,7 @@ public class HostQueue implements Balancer {
                         this.waitingQueue.put(availableAtTime, waitingRequests);
                     }
                     waitingRequests.add(crawlEntry);
-                    if (log.isInfo()) log.info("Delaying crawl for " + crawlEntry.url().getHost() + " by queuing request (delay: " + sleeptime + " ms > threshold: " + delayThreshold + " ms). Will retry at " + (availableAtTime - now) + " ms.");
+                    if (log.isFine()) log.fine("Delaying crawl for " + crawlEntry.url().getHost() + " by queuing request (delay: " + sleeptime + " ms > threshold: " + delayThreshold + " ms). Will retry at " + (availableAtTime - now) + " ms.");
                 }
                 return null; // Return null so balancer tries next host
             } else {
