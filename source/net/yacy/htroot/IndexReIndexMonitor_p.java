@@ -388,6 +388,8 @@ public class IndexReIndexMonitor_p {
 			prop.put("recrawlReport_rejectedUrlsCount", recrawlbt.getRejectedUrlsCount());
 			prop.put("recrawlReport_malformedUrlsCount", recrawlbt.getMalformedUrlsCount());
 			prop.put("recrawlReport_malformedUrlsDeletedCount", recrawlbt.getMalformedUrlsDeletedCount());
+			prop.put("recrawlReport_maxRemoteQueueSize", recrawlbt.getMaxRemoteQueueSize());
+			prop.put("recrawlReport_currentRemoteQueueSize", sb.crawlQueues.remoteTriggeredCrawlJobSize());
 		} else {
 			prop.put("recrawlReport", 0);
 		}

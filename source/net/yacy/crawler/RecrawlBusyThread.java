@@ -73,7 +73,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     public static final int DEFAULT_MAX_REMOTE_URLS_PER_BATCH = 100;
 
     /** Default maximum size for remote triggered crawler queue */
-    public static final int DEFAULT_MAX_REMOTE_QUEUE_SIZE = 500;
+    public static final int DEFAULT_MAX_REMOTE_QUEUE_SIZE = 5000;
 
     /** The current query selecting documents to recrawl */
     private String currentQuery;
@@ -89,6 +89,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
     /** Maximum size for remote triggered crawler queue before pausing recrawl */
     private int maxRemoteQueueSize = DEFAULT_MAX_REMOTE_QUEUE_SIZE;
+
+    /** Track if we're currently paused due to remote queue being full */
+    private boolean pausedDueToFullQueue = false;
 
     private int chunkstart = 0;
     private final int chunksize = 100;
@@ -287,11 +290,26 @@ public class RecrawlBusyThread extends AbstractBusyThread {
             return false;
         }
 
-        // Check remote triggered crawler queue size - pause if it exceeds threshold
+        // Check REMOTE crawler queue size - pause if it exceeds threshold
+        // REMOTE: Contains new URLs discovered during recrawl (because remoteIndexing=true)
         final int remoteQueueSize = this.sb.crawlQueues.remoteTriggeredCrawlJobSize();
-        if (remoteQueueSize >= this.maxRemoteQueueSize) {
-            /* Remote queue is too full, wait until it drains to 20% */
-            if (remoteQueueSize > (this.maxRemoteQueueSize / 5)) {
+        final int resumeThreshold = this.maxRemoteQueueSize / 5; // Resume when queue drops to 20%
+        
+        if (this.pausedDueToFullQueue) {
+            // Currently paused - check if we can resume
+            if (remoteQueueSize <= resumeThreshold) {
+                this.pausedDueToFullQueue = false;
+                ConcurrentLog.info(THREAD_NAME, "Resuming recrawl: REMOTE queue dropped to " + remoteQueueSize + " (threshold: " + resumeThreshold + ")");
+            } else {
+                // Still too full, stay paused
+                return false;
+            }
+        } else {
+            // Not paused - check if we need to pause
+            if (remoteQueueSize >= this.maxRemoteQueueSize) {
+                this.pausedDueToFullQueue = true;
+                ConcurrentLog.info(THREAD_NAME, "Pausing recrawl: REMOTE queue " + remoteQueueSize + " >= max " + this.maxRemoteQueueSize + 
+                    ". Will resume when it drops to " + resumeThreshold);
                 return false;
             }
         }
