@@ -76,6 +76,12 @@
             <div class="form-group">
               <label>Delete URLs <input type="checkbox" name="deleteOnRecrawl" #(deleteOnRecrawl)#::checked="checked"#(/deleteOnRecrawl)# /></label>
             </div>
+            <div class="form-group">
+              <label>Max URLs per batch <input type="number" name="maxRemoteUrlsPerBatch" value="#[maxRemoteUrlsPerBatch]#" min="1" title="Maximum number of URLs to process per batch" /></label>
+            </div>
+            <div class="form-group">
+              <label>Max remote queue size <input type="number" name="maxRemoteQueueSize" value="#[maxRemoteQueueSize]#" min="1" title="Maximum number of URLs allowed in remote queue before recrawl pauses" /></label>
+            </div>
             <input type="submit" name="recrawlDefaults" value="Set defaults" class="btn btn-default" title="Reset to default values"/>
             <input type="submit" name="recrawlnow" value="start recrawl job now" class="btn btn-primary"/>
             to re-crawl documents selected with the given query.
@@ -96,6 +102,12 @@
               </div>
               <div class="form-group">
                 <label>Delete urls <input type="checkbox" name="deleteOnRecrawl" onchange="this.form.submit()" #(deleteOnRecrawl)#::checked="checked"#(/deleteOnRecrawl)# /></label>
+              </div>
+              <div class="form-group">
+                <label>Max URLs per batch <input type="number" name="maxRemoteUrlsPerBatch" value="#[maxRemoteUrlsPerBatch]#" min="1" onchange="this.form.submit()" title="Maximum number of URLs to process per batch" /></label>
+              </div>
+              <div class="form-group">
+                <label>Max remote queue size <input type="number" name="maxRemoteQueueSize" value="#[maxRemoteQueueSize]#" min="1" onchange="this.form.submit()" title="Maximum number of URLs allowed in remote queue before recrawl pauses" /></label>
               </div>
               <input type="submit" name="stoprecrawl" value="stop recrawl job" class="btn btn-danger"/>
             </fieldset>
@@ -146,6 +158,14 @@
           						<tr>
 	          						<th scope="row">Malformed URLs</th>
           							<td id="malformedUrlsCount" title="#[malformedUrlsDeletedCount]# deleted from the index">#[malformedUrlsCount]#</td>
+          						</tr>
+          						<tr>
+	          						<th scope="row" title="Maximum remote crawler queue size before recrawl pauses">Max remote queue size</th>
+          							<td id="maxRemoteQueueSize">#[maxRemoteQueueSize]#</td>
+          						</tr>
+          						<tr>
+	          						<th scope="row" title="Current number of URLs in remote crawler queue">Current remote queue size</th>
+          							<td id="currentRemoteQueueSize">#[currentRemoteQueueSize]#</td>
           						</tr>
           					</tbody>
           				</table>
