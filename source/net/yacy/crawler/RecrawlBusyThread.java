@@ -290,16 +290,16 @@ public class RecrawlBusyThread extends AbstractBusyThread {
             return false;
         }
 
-        // Check REMOTE crawler queue size - pause if it exceeds threshold
-        // REMOTE: Contains new URLs discovered during recrawl (because remoteIndexing=true)
-        final int remoteQueueSize = this.sb.crawlQueues.remoteTriggeredCrawlJobSize();
+        // Check GLOBAL/LIMIT crawler queue size - pause if it exceeds threshold
+        // GLOBAL: Contains new URLs discovered during recrawl at depth=1 (leaf nodes with remoteIndexing=true)
+        final int remoteQueueSize = this.sb.crawlQueues.limitCrawlJobSize();
         final int resumeThreshold = this.maxRemoteQueueSize / 5; // Resume when queue drops to 20%
         
         if (this.pausedDueToFullQueue) {
             // Currently paused - check if we can resume
             if (remoteQueueSize <= resumeThreshold) {
                 this.pausedDueToFullQueue = false;
-                ConcurrentLog.info(THREAD_NAME, "Resuming recrawl: REMOTE queue dropped to " + remoteQueueSize + " (threshold: " + resumeThreshold + ")");
+                ConcurrentLog.info(THREAD_NAME, "Resuming recrawl: GLOBAL queue dropped to " + remoteQueueSize + " (threshold: " + resumeThreshold + ")");
             } else {
                 // Still too full, stay paused
                 return false;
@@ -308,7 +308,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
             // Not paused - check if we need to pause
             if (remoteQueueSize >= this.maxRemoteQueueSize) {
                 this.pausedDueToFullQueue = true;
-                ConcurrentLog.info(THREAD_NAME, "Pausing recrawl: REMOTE queue " + remoteQueueSize + " >= max " + this.maxRemoteQueueSize + 
+                ConcurrentLog.info(THREAD_NAME, "Pausing recrawl: GLOBAL queue " + remoteQueueSize + " >= max " + this.maxRemoteQueueSize + 
                     ". Will resume when it drops to " + resumeThreshold);
                 return false;
             }

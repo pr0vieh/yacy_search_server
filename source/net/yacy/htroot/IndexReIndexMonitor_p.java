@@ -277,7 +277,7 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_deleteOnRecrawl", ((RecrawlBusyThread) recrawlbt).getDeleteOnRecrawl());
             prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", ((RecrawlBusyThread) recrawlbt).getMaxRemoteUrlsPerBatch());
             prop.put("recrawljobrunning_maxRemoteQueueSize", ((RecrawlBusyThread) recrawlbt).getMaxRemoteQueueSize());
-            prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.remoteTriggeredCrawlJobSize());
+            prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
         } else {
 			prop.put("recrawljobrunning", 0);
             prop.put("recrawljobrunning_recrawlquerytext", recrawlQuery);
@@ -285,7 +285,7 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_deleteOnRecrawl", deleteOnRecrawl);
             prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", maxRemoteUrlsPerBatch);
             prop.put("recrawljobrunning_maxRemoteQueueSize", maxRemoteQueueSize);
-            prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.remoteTriggeredCrawlJobSize());
+            prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
         }
 
         // return rewrite properties
@@ -389,7 +389,7 @@ public class IndexReIndexMonitor_p {
 			prop.put("recrawlReport_malformedUrlsCount", recrawlbt.getMalformedUrlsCount());
 			prop.put("recrawlReport_malformedUrlsDeletedCount", recrawlbt.getMalformedUrlsDeletedCount());
 			prop.put("recrawlReport_maxRemoteQueueSize", recrawlbt.getMaxRemoteQueueSize());
-			prop.put("recrawlReport_currentRemoteQueueSize", sb.crawlQueues.remoteTriggeredCrawlJobSize());
+			prop.put("recrawlReport_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 		} else {
 			prop.put("recrawlReport", 0);
 		}
