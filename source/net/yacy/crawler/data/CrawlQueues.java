@@ -190,6 +190,16 @@ public class CrawlQueues {
     }
 
     /**
+     * Check if URL exists in ANY stack (LOCAL, GLOBAL/LIMIT, REMOTE, NOLOAD).
+     * Use this to prevent re-queueing URLs that are already being crawled or known.
+     * @param hash the URL hash
+     * @return true if URL exists in any stack
+     */
+    public boolean existsInAnyStack(final byte[] hash) {
+        return this.noticeURL.existsInAnyStack(hash);
+    }
+
+    /**
      * count the number of same host names in the worker
      * @param host
      * @return

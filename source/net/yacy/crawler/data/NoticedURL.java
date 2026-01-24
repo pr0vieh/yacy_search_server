@@ -174,6 +174,20 @@ public class NoticedURL {
     }
 
     /**
+     * Check if a URL exists in ANY stack (LOCAL, GLOBAL/LIMIT, REMOTE, NOLOAD).
+     * Use this to prevent re-crawling URLs that are already known in any queue or being processed.
+     * @param urlhashb the URL hash
+     * @return true if the URL exists in any stack
+     */
+    protected boolean existsInAnyStack(final byte[] urlhashb) {
+        return
+            this.coreStack.has(urlhashb) ||
+            this.limitStack.has(urlhashb) ||
+            (this.remoteStack != null && this.remoteStack.has(urlhashb)) ||
+            this.noloadStack.has(urlhashb);
+    }
+
+    /**
      * push a crawl request on one of the different crawl stacks
      * @param stackType
      * @param entry
@@ -375,10 +389,10 @@ public class NoticedURL {
      */
     public int getTotalWaitingQueueSize() {
         int total = 0;
-        if (this.coreStack != null) total += this.coreStack.getTotalWaitingQueueSize();
-        if (this.limitStack != null) total += this.limitStack.getTotalWaitingQueueSize();
-        if (this.remoteStack != null) total += this.remoteStack.getTotalWaitingQueueSize();
-        if (this.noloadStack != null) total += this.noloadStack.getTotalWaitingQueueSize();
+        if (this.coreStack != null) total += this.coreStack.size();
+        if (this.limitStack != null) total += this.limitStack.size();
+        if (this.remoteStack != null) total += this.remoteStack.size();
+        if (this.noloadStack != null) total += this.noloadStack.size();
         return total;
     }
 
