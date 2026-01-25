@@ -77,6 +77,12 @@
               <label>Delete URLs <input type="checkbox" name="deleteOnRecrawl" #(deleteOnRecrawl)#::checked="checked"#(/deleteOnRecrawl)# /></label>
             </div>
             <div class="form-group">
+              <label>Allow remote indexing <input type="checkbox" name="allowRemoteIndexing" #(allowRemoteIndexing)#::checked="checked"#(/allowRemoteIndexing)# /></label>
+            </div>
+            <div class="form-group">
+              <label>Allow depth 1 (discover outlinks) <input type="checkbox" name="allowDepthOne" #(allowDepthOne)#::checked="checked"#(/allowDepthOne)# /></label>
+            </div>
+            <div class="form-group">
               <label>Max URLs per batch <input type="number" name="maxRemoteUrlsPerBatch" value="#[maxRemoteUrlsPerBatch]#" min="1" title="Maximum number of URLs to process per batch" /></label>
             </div>
             <div class="form-group">
@@ -102,6 +108,12 @@
               </div>
               <div class="form-group">
                 <label>Delete urls <input type="checkbox" name="deleteOnRecrawl" onchange="this.form.submit()" #(deleteOnRecrawl)#::checked="checked"#(/deleteOnRecrawl)# /></label>
+              </div>
+              <div class="form-group">
+                <label>Allow remote indexing <input type="checkbox" name="allowRemoteIndexing" onchange="this.form.submit()" #(allowRemoteIndexing)#::checked="checked"#(/allowRemoteIndexing)# /></label>
+              </div>
+              <div class="form-group">
+                <label>Allow depth 1 (discover outlinks) <input type="checkbox" name="allowDepthOne" onchange="this.form.submit()" #(allowDepthOne)#::checked="checked"#(/allowDepthOne)# /></label>
               </div>
               <div class="form-group">
                 <label>Max URLs per batch <input type="number" name="maxRemoteUrlsPerBatch" value="#[maxRemoteUrlsPerBatch]#" min="1" onchange="this.form.submit()" title="Maximum number of URLs to process per batch" /></label>

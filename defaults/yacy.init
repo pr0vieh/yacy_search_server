@@ -705,6 +705,8 @@ collection=user
 # the prereq-value is a memory pre-requisite: that much bytes must
 # be available/free in the heap; othervise the loop is not executed
 # and another idlesleep is performed
+recrawlindex.allowRemoteIndexing=true
+recrawlindex.allowDepthOne=true
 recrawlindex_busysleep=10
 recrawlindex_idlesleep=2000
 recrawlindex_loadprereq=8.0

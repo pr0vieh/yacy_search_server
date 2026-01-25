@@ -145,6 +145,8 @@ public final class SwitchboardConstants {
     public static final String CRAWLJOB_REMOTE_TRIGGERED_CRAWL                  = "62_remotetriggeredcrawl";
     public static final String CRAWLJOB_REMOTE_TRIGGERED_CRAWL_IDLESLEEP        = "62_remotetriggeredcrawl_idlesleep";
     public static final String CRAWLJOB_REMOTE_TRIGGERED_CRAWL_BUSYSLEEP        = "62_remotetriggeredcrawl_busysleep";
+    public static final String RECRAWL_ALLOW_REMOTE_INDEXING                    = "recrawlindex.allowRemoteIndexing";
+    public static final String RECRAWL_ALLOW_DEPTH_ONE                          = "recrawlindex.allowDepthOne";
     // 70_packs
     /**
      * <p><code>public static final String <strong>PACKS</strong> = "70_packs"</code></p>
