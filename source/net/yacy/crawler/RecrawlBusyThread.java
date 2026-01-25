@@ -46,6 +46,7 @@ import net.yacy.crawler.retrieval.Request;
 import net.yacy.document.parser.html.TagValency;
 import net.yacy.kelondro.workflow.AbstractBusyThread;
 import net.yacy.search.Switchboard;
+import net.yacy.search.SwitchboardConstants;
 import net.yacy.search.schema.CollectionSchema;
 
 /**
@@ -403,7 +404,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /**
      * @return a new default CrawlProfile instance to be used for recrawl jobs.
      */
-    public static CrawlProfile buildDefaultCrawlProfile() {
+    public static CrawlProfile buildDefaultCrawlProfile(final Switchboard sb) {
+        final boolean allowRemoteIndexing = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
+        final boolean allowDepthOne = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
+        final int depth = allowDepthOne ? 1 : 0;
+        final boolean remoteIndexing = allowRemoteIndexing && allowDepthOne;
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // crawlerUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // crawlerIpMustMatch
@@ -415,9 +420,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 CrawlProfile.MATCH_ALL_STRING, // indexContentMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // indexContentMustNotMatch
                 false, //noindexWhenCanonicalUnequalURL
-                1, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
+                depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
                 true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
-                true, true, true, true, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
+                true, true, true, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
                 "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
