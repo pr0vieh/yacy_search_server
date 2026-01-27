@@ -204,8 +204,9 @@ public final class IndexCell<ReferenceType extends Reference> extends AbstractBu
         }
 
         // if there is no small file, then merge matching files up to limit
-        term = 10;
-        while (term-- > 0 && (this.merger.queueLength() < 1)) {
+        // Always enforce maxFileSize limit, not just when queue is idle
+        term = 20;
+        while (term-- > 0) {
             if (!this.array.shrinkUpToMaxSizeFiles(this.merger, maxFileSize)) break;
             donesomething = true;
         }
