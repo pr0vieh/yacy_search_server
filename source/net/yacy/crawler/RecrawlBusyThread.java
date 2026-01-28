@@ -76,6 +76,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** Default maximum size for remote triggered crawler queue */
     public static final int DEFAULT_MAX_REMOTE_QUEUE_SIZE = 5000;
 
+    /** Default maximum number of new URLs to collect per recrawl URL (discovered during crawl depth=1) */
+    public static final int DEFAULT_MAX_NEW_URLS_PER_RECRAWL = 10;
+
     /** The current query selecting documents to recrawl */
     private String currentQuery;
 
@@ -91,6 +94,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** Maximum size for remote triggered crawler queue before pausing recrawl */
     private int maxRemoteQueueSize = DEFAULT_MAX_REMOTE_QUEUE_SIZE;
 
+    /** Maximum number of new URLs to collect per recrawl URL (discovered during depth=1 crawl) */
+    private int maxNewUrlsPerRecrawl = DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+
     /** Track if we're currently paused due to remote queue being full */
     private boolean pausedDueToFullQueue = false;
 
@@ -100,6 +106,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
     /** buffer of urls to recrawl */
     private final Set<DigestURL> urlstack;
+
+    /** Set to track all URLs that have been processed in this recrawl job (to avoid duplicates) */
+    private final Set<String> processedUrls = new HashSet<>();
 
     /** The total number of candidate URLs found for recrawl */
     private long urlsToRecrawl = 0;
@@ -239,6 +248,18 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
+     * Set the maximum number of new URLs to collect per recrawl URL
+     * @param maxUrls maximum new URLs per recrawl URL (minimum 1)
+     */
+    public void setMaxNewUrlsPerRecrawl(final int maxUrls) {
+        this.maxNewUrlsPerRecrawl = Math.max(1, maxUrls);
+    }
+
+    public int getMaxNewUrlsPerRecrawl() {
+        return this.maxNewUrlsPerRecrawl;
+    }
+
+    /**
      * feed urls to the local crawler
      * (Switchboard.addToCrawler() is not used here, as there existing urls are always skipped)
      *
@@ -342,6 +363,10 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     public void terminate(boolean waitFor) {
         super.terminate(waitFor);
         this.endTime = LocalDateTime.now();
+        // Clean up processed URLs set to free memory
+        if (!this.processedUrls.isEmpty()) {
+            this.processedUrls.clear();
+        }
     }
 
     /**
@@ -374,7 +399,21 @@ public class RecrawlBusyThread extends AbstractBusyThread {
             final Set<String> tobedeletedIDs = new HashSet<>();
             for (final SolrDocument doc : docList) {
                 try {
-                    this.urlstack.add(new DigestURL((String) doc.getFieldValue(CollectionSchema.sku.getSolrFieldName())));
+                    final String urlStr = (String) doc.getFieldValue(CollectionSchema.sku.getSolrFieldName());
+                    final DigestURL url = new DigestURL(urlStr);
+
+                    // Check if URL was already processed in this recrawl job (avoid duplicates)
+                    if (this.processedUrls.contains(url.toNormalform(false))) {
+                        this.rejectedUrlsCount++;
+                        ConcurrentLog.fine(THREAD_NAME, "Skipping duplicate URL in recrawl job: " + url.toNormalform(true));
+                        continue;
+                    }
+
+                    // Mark URL as processed to prevent duplicates
+                    this.processedUrls.add(url.toNormalform(false));
+
+                    // Add to urlstack for later feeding to crawler
+                    this.urlstack.add(url);
                     if (this.deleteOnRecrawl) tobedeletedIDs.add((String) doc.getFieldValue(CollectionSchema.id.getSolrFieldName()));
                 } catch (final MalformedURLException ex) {
                     this.malformedUrlsCount++;

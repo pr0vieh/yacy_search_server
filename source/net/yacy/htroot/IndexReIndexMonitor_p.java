@@ -130,6 +130,7 @@ public class IndexReIndexMonitor_p {
         boolean deleteOnRecrawl = RecrawlBusyThread.DEFAULT_DELETE_ON_RECRAWL;
         int maxRemoteUrlsPerBatch = RecrawlBusyThread.DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
         int maxRemoteQueueSize = RecrawlBusyThread.DEFAULT_MAX_REMOTE_QUEUE_SIZE;
+        int maxNewUrlsPerRecrawl = RecrawlBusyThread.DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
 		boolean allowRemoteIndexing = sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
 		boolean allowDepthOne = sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
         // to signal that a setting shall change the form provides a fixed parameter setup=recrawljob, if not present return status only
@@ -166,6 +167,14 @@ public class IndexReIndexMonitor_p {
                 }
             }
 
+            if (post.containsKey("maxNewUrlsPerRecrawl")) {
+                try {
+                    maxNewUrlsPerRecrawl = Integer.parseInt(post.get("maxNewUrlsPerRecrawl"));
+                } catch (final NumberFormatException e) {
+                    maxNewUrlsPerRecrawl = RecrawlBusyThread.DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+                }
+            }
+
 			allowRemoteIndexing = post.containsKey("allowRemoteIndexing");
 			allowDepthOne = post.containsKey("allowDepthOne");
 
@@ -182,9 +191,11 @@ public class IndexReIndexMonitor_p {
                 prop.put("recrawljobrunning_simulationResult", 0);
                 prop.put("recrawljobrunning_error", 0);
             	if (post.containsKey("recrawlnow")) {
+            		final RecrawlBusyThread thread = new RecrawlBusyThread(Switchboard.getSwitchboard(), recrawlQuery, inclerrdoc, deleteOnRecrawl, 
+            					maxRemoteUrlsPerBatch, maxRemoteQueueSize);
+            		thread.setMaxNewUrlsPerRecrawl(maxNewUrlsPerRecrawl);
             		sb.deployThread(RecrawlBusyThread.THREAD_NAME, "ReCrawl", "recrawl existing documents", null,
-            				new RecrawlBusyThread(Switchboard.getSwitchboard(), recrawlQuery, inclerrdoc, deleteOnRecrawl, 
-            					maxRemoteUrlsPerBatch, maxRemoteQueueSize), 1000);
+            				thread, 1000);
             		recrawlbt = sb.getThread(RecrawlBusyThread.THREAD_NAME);
 
             		/* store this call as an api call for easy scheduling possibility */
@@ -293,6 +304,7 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_deleteOnRecrawl", ((RecrawlBusyThread) recrawlbt).getDeleteOnRecrawl());
             prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", ((RecrawlBusyThread) recrawlbt).getMaxRemoteUrlsPerBatch());
             prop.put("recrawljobrunning_maxRemoteQueueSize", ((RecrawlBusyThread) recrawlbt).getMaxRemoteQueueSize());
+            prop.put("recrawljobrunning_maxNewUrlsPerRecrawl", ((RecrawlBusyThread) recrawlbt).getMaxNewUrlsPerRecrawl());
             prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 			prop.put("recrawljobrunning_allowRemoteIndexing", allowRemoteIndexing);
 			prop.put("recrawljobrunning_allowDepthOne", allowDepthOne);
@@ -302,6 +314,7 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_includefailedurls", inclerrdoc);
             prop.put("recrawljobrunning_deleteOnRecrawl", deleteOnRecrawl);
             prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", maxRemoteUrlsPerBatch);
+            prop.put("recrawljobrunning_maxNewUrlsPerRecrawl", maxNewUrlsPerRecrawl);
             prop.put("recrawljobrunning_maxRemoteQueueSize", maxRemoteQueueSize);
             prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 			prop.put("recrawljobrunning_allowRemoteIndexing", allowRemoteIndexing);
@@ -409,6 +422,7 @@ public class IndexReIndexMonitor_p {
 			prop.put("recrawlReport_malformedUrlsCount", recrawlbt.getMalformedUrlsCount());
 			prop.put("recrawlReport_malformedUrlsDeletedCount", recrawlbt.getMalformedUrlsDeletedCount());
 			prop.put("recrawlReport_maxRemoteQueueSize", recrawlbt.getMaxRemoteQueueSize());
+			prop.put("recrawlReport_maxNewUrlsPerRecrawl", recrawlbt.getMaxNewUrlsPerRecrawl());
 			prop.put("recrawlReport_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 		} else {
 			prop.put("recrawlReport", 0);
