@@ -118,8 +118,9 @@ referrer.meta.policy=origin-when-cross-origin
 # the file size of database files can be limited. Larger files can be used to get a
 # better IO performance and to use less RAM; however, if the size must be limited
 # because of limitations of the file system, the maximum size can be set here
+# Set to 2GB (Integer.MAX_VALUE) to prevent excessively large BLOB files
 filesize.max.win   = 2147483647
-filesize.max.other = 8589934591
+filesize.max.other = 2147483647
 
 # Network Definition
 # There can be separate YaCy networks, and managed sub-groups of the general network.
