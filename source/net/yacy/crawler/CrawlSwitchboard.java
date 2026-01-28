@@ -489,7 +489,7 @@ public final class CrawlSwitchboard {
         this.defaultTextSnippetGlobalProfile.setCacheStrategy(CacheStrategy.IFEXIST);
 
         // generate new default entry for RecrawlBusyThread
-        this.defaultRecrawlJobProfile = RecrawlBusyThread.buildDefaultCrawlProfile();
+        this.defaultRecrawlJobProfile = RecrawlBusyThread.buildDefaultCrawlProfile(this.switchboard);
         this.profilesActiveCrawls.put(
             UTF8.getBytes(this.defaultRecrawlJobProfile.handle()),
             this.defaultRecrawlJobProfile);

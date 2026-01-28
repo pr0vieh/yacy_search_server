@@ -174,6 +174,20 @@ public class NoticedURL {
     }
 
     /**
+     * Check if a URL exists in ANY stack (LOCAL, GLOBAL/LIMIT, REMOTE, NOLOAD).
+     * Use this to prevent re-crawling URLs that are already known in any queue or being processed.
+     * @param urlhashb the URL hash
+     * @return true if the URL exists in any stack
+     */
+    protected boolean existsInAnyStack(final byte[] urlhashb) {
+        return
+            this.coreStack.has(urlhashb) ||
+            this.limitStack.has(urlhashb) ||
+            (this.remoteStack != null && this.remoteStack.has(urlhashb)) ||
+            this.noloadStack.has(urlhashb);
+    }
+
+    /**
      * push a crawl request on one of the different crawl stacks
      * @param stackType
      * @param entry
