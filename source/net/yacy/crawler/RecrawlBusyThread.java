@@ -483,6 +483,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         final boolean allowDepthOne = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
         final int depth = allowDepthOne ? 1 : 0;
         final boolean remoteIndexing = allowRemoteIndexing && allowDepthOne;
+        // Limit pages per domain to prevent excessive link discovery during depth=1 crawl
+        // This prevents a single domain from flooding the GLOBAL queue with too many new URLs
+        final int maxPagesPerDomain = 100; // reasonable limit to prevent queue flooding
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // crawlerUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // crawlerIpMustMatch
@@ -494,7 +497,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 CrawlProfile.MATCH_ALL_STRING, // indexContentMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // indexContentMustNotMatch
                 false, //noindexWhenCanonicalUnequalURL
-                depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
+                depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), maxPagesPerDomain,
                 true, true, true, true, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow (set true to prevent excessive link following),
                 true, true, false, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
                 "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
