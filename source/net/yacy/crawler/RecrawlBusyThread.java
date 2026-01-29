@@ -495,8 +495,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 CrawlProfile.MATCH_NEVER_STRING, // indexContentMustNotMatch
                 false, //noindexWhenCanonicalUnequalURL
                 depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
-                true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
-                true, true, true, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
+                true, true, true, true, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow (set true to prevent excessive link following),
+                true, true, false, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
                 "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
