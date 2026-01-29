@@ -88,6 +88,9 @@
             <div class="form-group">
               <label>Max remote queue size <input type="number" name="maxRemoteQueueSize" value="#[maxRemoteQueueSize]#" min="1" title="Maximum number of URLs allowed in remote queue before recrawl pauses" /></label>
             </div>
+            <div class="form-group">
+              <label>Max pages per domain <input type="number" name="maxPagesPerDomain" value="#[maxPagesPerDomain]#" min="1" title="Maximum number of pages to crawl per domain during recrawl" /></label>
+            </div>
             <input type="submit" name="recrawlDefaults" value="Set defaults" class="btn btn-default" title="Reset to default values"/>
             <input type="submit" name="recrawlnow" value="start recrawl job now" class="btn btn-primary"/>
             to re-crawl documents selected with the given query.
@@ -120,6 +123,9 @@
               </div>
               <div class="form-group">
                 <label>Max remote queue size <input type="number" name="maxRemoteQueueSize" value="#[maxRemoteQueueSize]#" min="1" onchange="this.form.submit()" title="Maximum number of URLs allowed in remote queue before recrawl pauses" /></label>
+              </div>
+              <div class="form-group">
+                <label>Max pages per domain <input type="number" name="maxPagesPerDomain" value="#[maxPagesPerDomain]#" min="1" onchange="this.form.submit()" title="Maximum number of pages to crawl per domain during recrawl" /></label>
               </div>
               <input type="submit" name="stoprecrawl" value="stop recrawl job" class="btn btn-danger"/>
             </fieldset>
@@ -178,6 +184,10 @@
           						<tr>
 	          						<th scope="row" title="Current number of URLs in remote crawler queue">Current remote queue size</th>
           							<td id="currentRemoteQueueSize">#[currentRemoteQueueSize]#</td>
+          						</tr>
+          						<tr>
+	          						<th scope="row" title="Maximum number of pages to crawl per domain">Max pages per domain</th>
+          							<td id="recrawljobrunning_maxPagesPerDomain">#[recrawljobrunning_maxPagesPerDomain]#</td>
           						</tr>
           					</tbody>
           				</table>

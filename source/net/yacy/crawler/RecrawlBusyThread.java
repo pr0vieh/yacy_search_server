@@ -83,6 +83,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** Default maximum number of new URLs to collect per recrawl URL (discovered during crawl depth=1) */
     public static final int DEFAULT_MAX_NEW_URLS_PER_RECRAWL = 10;
 
+    /** Default maximum pages per domain during recrawl */
+    public static final int DEFAULT_MAX_PAGES_PER_DOMAIN = 10;
+
     /** The current query selecting documents to recrawl */
     private String currentQuery;
 
@@ -100,6 +103,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
     /** Maximum number of new URLs to collect per recrawl URL (discovered during depth=1 crawl) */
     private int maxNewUrlsPerRecrawl = DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+
+    /** Maximum pages per domain during recrawl */
+    private int maxPagesPerDomain = DEFAULT_MAX_PAGES_PER_DOMAIN;
 
     /** Track if we're currently paused due to remote queue being full */
     private boolean pausedDueToFullQueue = false;
@@ -265,6 +271,18 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
     public int getMaxNewUrlsPerRecrawl() {
         return this.maxNewUrlsPerRecrawl;
+    }
+
+    /**
+     * Set the maximum pages per domain for recrawl
+     * @param maxPages maximum pages per domain (minimum 1)
+     */
+    public void setMaxPagesPerDomain(final int maxPages) {
+        this.maxPagesPerDomain = Math.max(1, maxPages);
+    }
+
+    public int getMaxPagesPerDomain() {
+        return this.maxPagesPerDomain;
     }
 
     /**
@@ -485,7 +503,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         final boolean remoteIndexing = allowRemoteIndexing && allowDepthOne;
         // Limit pages per domain to prevent excessive link discovery during depth=1 crawl
         // This prevents a single domain from flooding the GLOBAL queue with too many new URLs
-        final int maxPagesPerDomain = 100; // reasonable limit to prevent queue flooding
+        final int maxPagesPerDomain = DEFAULT_MAX_PAGES_PER_DOMAIN;
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // crawlerUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // crawlerIpMustMatch

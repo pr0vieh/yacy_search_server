@@ -131,6 +131,7 @@ public class IndexReIndexMonitor_p {
         int maxRemoteUrlsPerBatch = RecrawlBusyThread.DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
         int maxRemoteQueueSize = RecrawlBusyThread.DEFAULT_MAX_REMOTE_QUEUE_SIZE;
         int maxNewUrlsPerRecrawl = RecrawlBusyThread.DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+        int maxPagesPerDomain = RecrawlBusyThread.DEFAULT_MAX_PAGES_PER_DOMAIN;
 		boolean allowRemoteIndexing = sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
 		boolean allowDepthOne = sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
         // to signal that a setting shall change the form provides a fixed parameter setup=recrawljob, if not present return status only
@@ -175,6 +176,14 @@ public class IndexReIndexMonitor_p {
                 }
             }
 
+            if (post.containsKey("maxPagesPerDomain")) {
+                try {
+                    maxPagesPerDomain = Integer.parseInt(post.get("maxPagesPerDomain"));
+                } catch (final NumberFormatException e) {
+                    maxPagesPerDomain = RecrawlBusyThread.DEFAULT_MAX_PAGES_PER_DOMAIN;
+                }
+            }
+
 			allowRemoteIndexing = post.containsKey("allowRemoteIndexing");
 			allowDepthOne = post.containsKey("allowDepthOne");
 
@@ -194,6 +203,7 @@ public class IndexReIndexMonitor_p {
             		final RecrawlBusyThread thread = new RecrawlBusyThread(Switchboard.getSwitchboard(), recrawlQuery, inclerrdoc, deleteOnRecrawl, 
             					maxRemoteUrlsPerBatch, maxRemoteQueueSize);
             		thread.setMaxNewUrlsPerRecrawl(maxNewUrlsPerRecrawl);
+            		thread.setMaxPagesPerDomain(maxPagesPerDomain);
             		sb.deployThread(RecrawlBusyThread.THREAD_NAME, "ReCrawl", "recrawl existing documents", null,
             				thread, 1000);
             		recrawlbt = sb.getThread(RecrawlBusyThread.THREAD_NAME);
@@ -260,6 +270,7 @@ public class IndexReIndexMonitor_p {
                     deleteOnRecrawl = RecrawlBusyThread.DEFAULT_DELETE_ON_RECRAWL;
                     maxRemoteUrlsPerBatch = RecrawlBusyThread.DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
                     maxRemoteQueueSize = RecrawlBusyThread.DEFAULT_MAX_REMOTE_QUEUE_SIZE;
+                    maxPagesPerDomain = RecrawlBusyThread.DEFAULT_MAX_PAGES_PER_DOMAIN;
                 }
             } else {
                 if (post.containsKey("stoprecrawl")) {
@@ -305,6 +316,7 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", ((RecrawlBusyThread) recrawlbt).getMaxRemoteUrlsPerBatch());
             prop.put("recrawljobrunning_maxRemoteQueueSize", ((RecrawlBusyThread) recrawlbt).getMaxRemoteQueueSize());
             prop.put("recrawljobrunning_maxNewUrlsPerRecrawl", ((RecrawlBusyThread) recrawlbt).getMaxNewUrlsPerRecrawl());
+            prop.put("recrawljobrunning_maxPagesPerDomain", ((RecrawlBusyThread) recrawlbt).getMaxPagesPerDomain());
             prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 			prop.put("recrawljobrunning_allowRemoteIndexing", allowRemoteIndexing);
 			prop.put("recrawljobrunning_allowDepthOne", allowDepthOne);
@@ -315,6 +327,7 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_deleteOnRecrawl", deleteOnRecrawl);
             prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", maxRemoteUrlsPerBatch);
             prop.put("recrawljobrunning_maxNewUrlsPerRecrawl", maxNewUrlsPerRecrawl);
+            prop.put("recrawljobrunning_maxPagesPerDomain", maxPagesPerDomain);
             prop.put("recrawljobrunning_maxRemoteQueueSize", maxRemoteQueueSize);
             prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 			prop.put("recrawljobrunning_allowRemoteIndexing", allowRemoteIndexing);
