@@ -123,6 +123,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** Set to track all URLs that have been processed in this recrawl job (to avoid duplicates) */
     private final Set<String> processedUrls = new HashSet<>();
 
+    /** Threshold for cleaning up the processedUrls set to manage memory usage (default: 100k URLs) */
+    private long processedUrlsCleanupThreshold = 100000;
+
     /** The total number of candidate URLs found for recrawl */
     private long urlsToRecrawl = 0;
 
@@ -286,6 +289,18 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
+     * Set the cleanup threshold for the processedUrls set to manage memory usage
+     * @param threshold number of URLs before triggering cleanup (minimum 1000)
+     */
+    public void setProcessedUrlsCleanupThreshold(final long threshold) {
+        this.processedUrlsCleanupThreshold = Math.max(1000, threshold);
+    }
+
+    public long getProcessedUrlsCleanupThreshold() {
+        return this.processedUrlsCleanupThreshold;
+    }
+
+    /**
      * feed urls to the local crawler
      * (Switchboard.addToCrawler() is not used here, as there existing urls are always skipped)
      *
@@ -399,7 +414,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         this.endTime = LocalDateTime.now();
         // Clean up processed URLs set to free memory
         if (!this.processedUrls.isEmpty()) {
+            final long clearedSize = this.processedUrls.size();
             this.processedUrls.clear();
+            ConcurrentLog.info(THREAD_NAME, "Recrawl job terminated. Freed memory from " + clearedSize + " processed URLs tracking.");
         }
     }
 
@@ -447,6 +464,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
                     // Mark URL as processed to prevent duplicates
                     this.processedUrls.add(url.toNormalform(false));
+
+                    // Clean up processedUrls set periodically to manage memory usage
+                    if (this.processedUrls.size() >= this.processedUrlsCleanupThreshold) {
+                        this.cleanupProcessedUrls();
+                    }
 
                     // Add to urlstack for later feeding to crawler (with collections for test-745)
                     this.urlstack.put(url, extractCollections(doc));
@@ -522,6 +544,18 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
+    }
+
+    /**
+     * Cleanup the processedUrls set to manage memory usage during long-running recrawl jobs.
+     * This is called periodically when the set exceeds the cleanup threshold.
+     * Strategy: Clear entries to prevent unbounded growth and memory exhaustion.
+     */
+    private void cleanupProcessedUrls() {
+        final long currentSize = this.processedUrls.size();
+        this.processedUrls.clear();
+        ConcurrentLog.info(THREAD_NAME, "Cleaned up processedUrls set: freed memory from " + currentSize + " entries. " +
+            "Note: This may allow duplicate URLs if same URL appears in different chunks, but prevents memory exhaustion.");
     }
 
     @Override
