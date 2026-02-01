@@ -120,8 +120,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** The base collection configured on the recrawl profile (used when no per-doc collection exists) */
     private final String baseRecrawlCollections;
 
-    /** Set to track all URLs that have been processed in this recrawl job (to avoid duplicates) */
-    private final Set<String> processedUrls = new HashSet<>();
+    /** Set to track URLs in current chunk/batch to avoid duplicates (cleared after each chunk) */
+    private final Set<String> processedUrls = new HashSet<>(200);
 
     /** Threshold for cleaning up the processedUrls set to manage memory usage (default: 100k URLs) */
     private long processedUrlsCleanupThreshold = 100000;
@@ -465,6 +465,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
         if (docList != null) {
             final Set<String> tobedeletedIDs = new HashSet<>();
+            this.processedUrls.clear(); // Clear at start of each chunk processing
+            
             for (final SolrDocument doc : docList) {
                 try {
                     final String urlStr = (String) doc.getFieldValue(CollectionSchema.sku.getSolrFieldName());
@@ -477,13 +479,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                         continue;
                     }
 
-                    // Mark URL as processed to prevent duplicates
+                    // Mark URL as processed to prevent duplicates within this batch
                     this.processedUrls.add(url.toNormalform(false));
-
-                    // Clean up processedUrls set periodically to manage memory usage
-                    if (this.processedUrls.size() >= this.processedUrlsCleanupThreshold) {
-                        this.cleanupProcessedUrls();
-                    }
 
                     // Add to urlstack for later feeding to crawler (with collections for test-745)
                     this.urlstack.put(url, extractCollections(doc));
@@ -569,15 +566,13 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
-     * Cleanup the processedUrls set to manage memory usage during long-running recrawl jobs.
-     * This is called periodically when the set exceeds the cleanup threshold.
-     * Strategy: Clear entries to prevent unbounded growth and memory exhaustion.
+     * Note on duplicate prevention: The processedUrls set only tracks URLs in the current chunk/batch,
+     * not the entire job. This prevents intra-chunk duplicates without unbounded memory growth.
+     * Inter-chunk duplicates are acceptable since they're processed anyway and Solr handles deduplication.
      */
     private void cleanupProcessedUrls() {
-        final long currentSize = this.processedUrls.size();
+        // This method is no longer needed but kept for API compatibility
         this.processedUrls.clear();
-        ConcurrentLog.info(THREAD_NAME, "Cleaned up processedUrls set: freed memory from " + currentSize + " entries. " +
-            "Note: This may allow duplicate URLs if same URL appears in different chunks, but prevents memory exhaustion.");
     }
 
     @Override
