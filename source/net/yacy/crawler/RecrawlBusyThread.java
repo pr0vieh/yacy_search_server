@@ -531,7 +531,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
+<<<<<<< HEAD
      * @param sb the Switchboard instance for configuration lookups
+=======
+     * @param collections the base collections to use (can be null or empty)
+>>>>>>> feature/745-preserve-collections
      * @return a new default CrawlProfile instance to be used for recrawl jobs.
      */
     public static CrawlProfile buildDefaultCrawlProfile(final Switchboard sb) {
@@ -558,7 +562,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), maxPagesPerDomain,
                 true, true, true, true, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow (set true to prevent excessive link following),
                 true, true, false, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
-                collections,
+                collections != null ? collections : "",
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
