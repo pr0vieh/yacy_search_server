@@ -219,25 +219,40 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
         if (!this.urlstack.isEmpty()) {
             final CrawlProfile profile = this.sb.crawler.defaultRecrawlJobProfile;
+            // Use profile collection or fallback to baseRecrawlCollections if profile has none
+            final String baseCollections = profile.collectionName() != null ? profile.collectionName() : this.baseRecrawlCollections;
 
             for (final Map.Entry<DigestURL, String> entry : this.urlstack.entrySet()) {
                 final DigestURL url = entry.getKey();
-                final String collections = entry.getValue();
+                final String urlCollections = entry.getValue();
 
-                /* Preserve the original collection of the document when available */
-                profile.setCollections(collections != null ? collections : this.baseRecrawlCollections);
+                // Use URL-specific collection if available, otherwise keep profile's base collection
+                if (urlCollections != null && !urlCollections.isEmpty()) {
+                    profile.setCollections(urlCollections);
+                } else if (profile.collectionName() == null || profile.collectionName().isEmpty()) {
+                    // Set base collection as fallback only if profile has no collection
+                    profile.setCollections(baseCollections);
+                }
 
                 final Request request = new Request(ASCII.getBytes(this.sb.peers.mySeed().hash), url, null, "",
                         new Date(), profile.handle(), 0, profile.timezoneOffset());
+
                 String acceptedError = this.sb.crawlStacker.checkAcceptanceChangeable(url, profile, 0);
-                if (!this.includefailed && acceptedError == null) { // skip check if failed docs to be included
-                    acceptedError = this.sb.crawlStacker.checkAcceptanceInitially(url, profile);
-                }
+                
                 if (acceptedError != null) {
                     this.rejectedUrlsCount++;
                     ConcurrentLog.info(THREAD_NAME, "addToCrawler: cannot load " + url.toNormalform(true) + ": " + acceptedError);
                     continue;
+                } else if (!this.includefailed) {
+                    // skip check if failed docs to be included
+                    acceptedError = this.sb.crawlStacker.checkAcceptanceInitially(url, profile);
+                    if (acceptedError != null) {
+                        this.rejectedUrlsCount++;
+                        ConcurrentLog.info(THREAD_NAME, "addToCrawler: cannot load " + url.toNormalform(true) + ": " + acceptedError);
+                        continue;
+                    }
                 }
+                
                 final String s;
                 s = this.sb.crawlQueues.noticeURL.push(NoticedURL.StackType.LOCAL, request, profile, this.sb.robots);
 
@@ -249,8 +264,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                     this.recrawledUrlsCount++;
                 }
             }
-            /* Reset to base collections to avoid leaking per-document overrides */
-            profile.setCollections(this.baseRecrawlCollections);
+            // Reset profile collections to base value to avoid state leakage
+            profile.setCollections(baseCollections);
             this.urlstack.clear();
         }
         return (added > 0);
@@ -375,9 +390,10 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
+     * @param collections the base collections to use (can be null)
      * @return a new default CrawlProfile instance to be used for recrawl jobs.
      */
-    public static CrawlProfile buildDefaultCrawlProfile() {
+    public static CrawlProfile buildDefaultCrawlProfile(final String collections) {
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // crawlerUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // crawlerIpMustMatch
@@ -392,7 +408,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 0, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
                 true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
                 true, true, true, false, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
-                "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
+                collections, // collections (will be overridden per URL in feedToCrawler() if URL has specific collections)
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
