@@ -390,7 +390,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
-     * @param collections the base collections to use (can be null)
+     * @param collections the base collections to use (can be null or empty)
      * @return a new default CrawlProfile instance to be used for recrawl jobs.
      */
     public static CrawlProfile buildDefaultCrawlProfile(final String collections) {
@@ -408,7 +408,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 0, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
                 true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
                 true, true, true, false, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
-                collections, // collections (will be overridden per URL in feedToCrawler() if URL has specific collections)
+                collections != null ? collections : "", // collections (will be overridden per URL in feedToCrawler() if URL has specific collections)
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
