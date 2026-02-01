@@ -130,9 +130,7 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	}
         	
         	long loadTime = System.currentTimeMillis() - startTime;
-        	if (loadTime > 1000) { // only log if it takes more than 1 second
-        		ConcurrentLog.info("RowHandleMap", "loaded " + recordsLoaded + " records from " + file.getName() + " in " + loadTime + "ms (batch size: " + batchSize + ")");
-        	}
+        	ConcurrentLog.info("RowHandleMap", "loaded " + recordsLoaded + " records from " + file.getName() + " in " + loadTime + "ms (batch size: " + batchSize + ")");
         } finally {
         	is.close();
         }
