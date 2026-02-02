@@ -26,7 +26,11 @@
 
 package net.yacy.kelondro.blob;
 
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.text.ParseException;
@@ -59,6 +63,8 @@ import net.yacy.cora.order.NaturalOrder;
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.cora.util.LookAheadIterator;
 import net.yacy.cora.util.SpaceExceededException;
+import net.yacy.kelondro.io.CachedFileWriter;
+import net.yacy.kelondro.io.Writer;
 import net.yacy.kelondro.rwi.Reference;
 import net.yacy.kelondro.rwi.ReferenceContainer;
 import net.yacy.kelondro.rwi.ReferenceFactory;
@@ -180,6 +186,10 @@ public class ArrayStack implements BLOB {
         }
         if (deletions) files = heapLocation.list(); // make a fresh list
 
+        // Pre-load split: break oversized BLOBs (> 2GB) into smaller pieces
+        // This prevents startup crashes when loading huge legacy BLOBs
+        files = presplitOversizedBLOBs(files);
+
         // find maximum time: the file with this time will be given a write buffer
         final TreeMap<Long, blobItem> sortedItems = new TreeMap<Long, blobItem>();
         BLOB oneBlob;
@@ -242,6 +252,140 @@ public class ArrayStack implements BLOB {
         // is used for write operations and all other shall be trimmed automatically since they are not used for writing. And the
         // topmost BLOB must not be trimmed to support fast writings.
         throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Pre-load splitter: detects and splits oversized BLOBs (>2GB) into smaller pieces
+     * Prevents heap overflow and corruption when loading legacy large BLOBs
+     * @param files list of blob files to process
+     * @return updated file list with split BLOBs
+     */
+    private synchronized String[] presplitOversizedBLOBs(final String[] files) {
+        // Collect files that need splitting
+        final List<String> filesNeedingSplit = new ArrayList<String>();
+        for (final String file : files) {
+            if (file.length() >= 22 && file.charAt(this.prefix.length()) == '.' && file.endsWith(".blob")) {
+                final File f = new File(heapLocation, file);
+                if (f.length() > this.fileSizeLimit) {
+                    filesNeedingSplit.add(file);
+                }
+            }
+        }
+
+        // Split oversized files
+        if (!filesNeedingSplit.isEmpty()) {
+            ConcurrentLog.warn("KELONDRO", "ArrayStack: found " + filesNeedingSplit.size() + 
+                " oversized BLOBs (>2GB), splitting into smaller pieces...");
+            
+            for (final String file : filesNeedingSplit) {
+                try {
+                    final File f = new File(heapLocation, file);
+                    splitOversizedBLOB(f);
+                } catch (final Exception e) {
+                    ConcurrentLog.logException(e);
+                    // Continue with next file
+                }
+            }
+            
+            // Return fresh file list after splitting
+            return heapLocation.list();
+        }
+        
+        return files;
+    }
+
+    /**
+     * Splits a single oversized BLOB file into smaller chunks
+     * Reads records from oversized BLOB and writes them to new smaller BLOBs
+     * @param oversizedFile the BLOB file to split
+     */
+    private synchronized void splitOversizedBLOB(final File oversizedFile) throws IOException {
+        if (!oversizedFile.exists()) return;
+        
+        final long fileSize = oversizedFile.length();
+        final long maxSize = this.fileSizeLimit;
+        
+        if (fileSize <= maxSize) return; // Not oversized
+        
+        ConcurrentLog.info("KELONDRO", "ArrayStack: splitting oversized BLOB " + 
+            oversizedFile.getName() + " (" + (fileSize / 1024 / 1024) + " MB)");
+        
+        // Create temporary working file
+        final File tempFile = new File(oversizedFile.getAbsolutePath() + ".split");
+        
+        try {
+            // Read records from oversized file and write to splits
+            final FileInputStream fis = new FileInputStream(oversizedFile);
+            final BufferedInputStream bis = new BufferedInputStream(fis, 16 * 1024 * 1024);
+            final DataInputStream dis = new DataInputStream(bis);
+            
+            File currentOutputFile = null;
+            Writer currentWriter = null;
+            long currentSize = 0;
+            int splitIndex = 0;
+            byte[] key = new byte[this.keylength];
+            
+            try {
+                while (true) {
+                    try {
+                        final int reclen = dis.readInt();
+                        if (reclen <= 0) break; // End of records or corrupted
+                        
+                        dis.readFully(key, 0, key.length);
+                        
+                        // Read value data
+                        final byte[] value = new byte[reclen - this.keylength];
+                        dis.readFully(value, 0, value.length);
+                        
+                        // Check if we need a new output file
+                        if (currentOutputFile == null || currentSize + 4 + reclen > maxSize) {
+                            if (currentWriter != null) {
+                                currentWriter.close();
+                            }
+                            // Create new split file with timestamp
+                            currentOutputFile = newBLOB(new Date(System.currentTimeMillis() + splitIndex));
+                            currentWriter = new CachedFileWriter(currentOutputFile);
+                            currentSize = 0;
+                            splitIndex++;
+                            ConcurrentLog.info("KELONDRO", "ArrayStack: created split file " + 
+                                currentOutputFile.getName() + " for oversized BLOB");
+                        }
+                        
+                        // Write record to current output file
+                        if (currentWriter != null) {
+                            currentWriter.seek(currentSize);
+                            currentWriter.writeInt(reclen);
+                            currentWriter.write(key, 0, key.length);
+                            currentWriter.write(value, 0, value.length);
+                            currentSize += 4 + reclen;
+                        }
+                        
+                    } catch (final EOFException e) {
+                        break; // Normal end of file
+                    }
+                }
+            } finally {
+                dis.close();
+                if (currentWriter != null) {
+                    currentWriter.close();
+                }
+            }
+            
+            // Delete the original oversized file
+            if (splitIndex > 0) {
+                oversizedFile.delete();
+                ConcurrentLog.info("KELONDRO", "ArrayStack: deleted oversized BLOB " + 
+                    oversizedFile.getName() + " (split into " + splitIndex + " smaller files)");
+            }
+            
+        } catch (final Exception e) {
+            ConcurrentLog.logException(e);
+            // Leave oversized file in place if split fails
+            ConcurrentLog.warn("KELONDRO", "ArrayStack: failed to split oversized BLOB " + 
+                oversizedFile.getName() + ", will attempt to load normally");
+        } finally {
+            if (tempFile.exists()) tempFile.delete();
+        }
     }
 
     /**
