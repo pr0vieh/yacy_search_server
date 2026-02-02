@@ -110,7 +110,7 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	if (file.getName().endsWith(".gz")) is = new GZIPInputStream(is, 65536); // larger buffer for GZIP decompression
         	
         	// Use batch loading: read multiple records at once for better performance
-        	final byte[] batch = new byte[recordSize * batchSize];
+        	byte[] batch = new byte[recordSize * batchSize];
         	final byte[] a = new byte[recordSize];
         	int bytesRead;
         	long startTime = System.currentTimeMillis();
@@ -133,6 +133,9 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	if (loadTime > 1000) { // only log if it takes more than 1 second
         		ConcurrentLog.info("RowHandleMap", "loaded " + recordsLoaded + " records from " + file.getName() + " in " + loadTime + "ms (batch size: " + batchSize + ")");
         	}
+        	
+        	// Explicitly help GC by clearing batch buffer to avoid memory leak with multiple index files
+        	batch = null;
         } finally {
         	is.close();
         }
