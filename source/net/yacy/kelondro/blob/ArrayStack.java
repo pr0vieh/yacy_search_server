@@ -251,6 +251,9 @@ public class ArrayStack implements BLOB {
      * @throws IOException
      */
     public synchronized void mountBLOB(final File location, final boolean full) throws IOException {
+        if (this.blobs == null) {
+            throw new IOException("ArrayStack is closed and cannot mount new BLOBs");
+        }
         Date d;
         try {
             d = my_SHORT_MILSEC_FORMATTER.parse(location.getName().substring(this.prefix.length() + 1, this.prefix.length() + 18), 0).getTime();
