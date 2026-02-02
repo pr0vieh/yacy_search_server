@@ -90,14 +90,14 @@ public class ArrayStack implements BLOB {
      * time-out. Deletions are not made automatically, they must be triggered using this method.
      */
 
-    private static final long maxFileSize = Integer.MAX_VALUE;
-    public  static final long oneMonth    = 1000L * 60L * 60L * 24L * 365L / 12L;
+    public static final long oneMonth    = 1000L * 60L * 60L * 24L * 365L / 12L;
 
     private       int            keylength;
     private       ByteOrder      ordering;
     private final File           heapLocation;
     private       long           fileAgeLimit;
     private       long           fileSizeLimit;
+    private       long           maxFileSize;  // Configurable max BLOB file size (from filesize.max.* setting)
     private       long           repositoryAgeMax;
     private       long           repositorySizeMax;
     private       List<blobItem> blobs;
@@ -120,13 +120,37 @@ public class ArrayStack implements BLOB {
             final int buffersize,
             final boolean trimall,
             final boolean deleteonfail) throws IOException {
+        this(heapLocation, prefix, ordering, keylength, buffersize, trimall, deleteonfail, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Constructor with configurable max file size
+     * @param heapLocation location of the BLOB files
+     * @param prefix prefix for BLOB file names
+     * @param ordering byte order for keys
+     * @param keylength length of keys in bytes
+     * @param buffersize size of the write buffer
+     * @param trimall whether to trim all BLOBs
+     * @param deleteonfail whether to delete corrupted files
+     * @param maxFileSizeFromConfig maximum file size from config (filesize.max.win or filesize.max.other)
+     */
+    public ArrayStack(
+            final File heapLocation,
+            final String prefix,
+            final ByteOrder ordering,
+            final int keylength,
+            final int buffersize,
+            final boolean trimall,
+            final boolean deleteonfail,
+            final long maxFileSizeFromConfig) throws IOException {
         this.keylength = keylength;
         this.prefix = prefix;
         this.ordering = ordering;
         this.buffersize = buffersize;
         this.heapLocation = heapLocation;
         this.fileAgeLimit = oneMonth;
-        this.fileSizeLimit = maxFileSize;
+        this.maxFileSize = maxFileSizeFromConfig;  // Use config value
+        this.fileSizeLimit = this.maxFileSize;    // Initialize with max
         this.repositoryAgeMax = Long.MAX_VALUE;
         this.repositorySizeMax = Long.MAX_VALUE;
         this.trimall = trimall;
