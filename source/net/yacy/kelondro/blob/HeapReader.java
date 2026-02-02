@@ -666,7 +666,21 @@ public class HeapReader {
 
             // access the file and read the size of the container
             this.file.seek(pos);
-            return this.file.readInt() - this.keylength;
+            final int rawLen = this.file.readInt();
+            if (rawLen <= 0) {
+                // corrupted file - record size is invalid
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": invalid size. len = " + rawLen);
+                this.index.remove(key);
+                return -1;
+            }
+            final int len = rawLen - this.keylength;
+            if (len < 0) {
+                // also corrupted - size smaller than key length
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": size (" + rawLen + ") < keylength (" + this.keylength + ")");
+                this.index.remove(key);
+                return -1;
+            }
+            return len;
         }
     }
 
