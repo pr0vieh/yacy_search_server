@@ -417,7 +417,13 @@ public final class ReferenceContainerArray<ReferenceType extends Reference> {
 
     public boolean shrinkUpToMaxSizeFiles(final IODispatcher merger, final long maxFileSize) {
         final File[] ff = this.array.unmountBestMatch(2.0f, maxFileSize);
-        if (ff == null) return false;
+        if (ff == null) {
+            final File oversized = this.array.unmountLargestAbove(maxFileSize);
+            if (oversized == null) return false;
+            ConcurrentLog.info("KELONDRO", "RICELL-shrink3: rewrite oversized BLOB " + oversized.getName() + " (> " + maxFileSize + ")");
+            merger.merge(oversized, null, this.factory, this.array, newContainerBLOBFile());
+            return true;
+        }
         ConcurrentLog.info("KELONDRO", "RICELL-shrink3: unmountBestMatch(2.0, " + maxFileSize + ")");
         merger.merge(ff[0], ff[1], this.factory, this.array, newContainerBLOBFile());
         return true;

@@ -295,30 +295,22 @@ public class ArrayStack implements BLOB {
     }
 
     public synchronized File[] unmountBestMatch(final float maxq, long maxResultSize) {
-    	if (this.blobs.size() < 2) return null;
+        if (this.blobs.size() < 2) return null;
         long l, r, m;
         File lf, rf;
         float min = Float.MAX_VALUE;
         final File[] bestMatch = new File[2];
-    	int loopcount = 0;
+        int loopcount = 0;
         mainloop: for (int i = 0; i < this.blobs.size() - 1; i++) {
             for (int j = i + 1; j < this.blobs.size(); j++) {
                 loopcount++;
-            	lf = this.blobs.get(i).location;
-            	rf = this.blobs.get(j).location;
-            	m = this.blobs.get(i).blob.mem();
-            	m += this.blobs.get(j).blob.mem();
-            	
-            	// Check if either file exceeds maxResultSize - if so, we MUST merge it regardless
-            	// This enforces the hard limit on file size
-            	long lf_size = lf.length();
-            	long rf_size = rf.length();
-            	boolean mustMerge = (lf_size > maxResultSize) || (rf_size > maxResultSize);
-            	
-                l = 1 + (lf_size >> 1);
-                r = 1 + (rf_size >> 1);
-                
-                if (!mustMerge && l + r > maxResultSize) continue;  // Skip if both small and sum too large
+                lf = this.blobs.get(i).location;
+                rf = this.blobs.get(j).location;
+                m = this.blobs.get(i).blob.mem();
+                m += this.blobs.get(j).blob.mem();
+                l = 1 + (lf.length() >> 1);
+                r = 1 + (rf.length() >> 1);
+                if (l + r > maxResultSize) continue;
                 if (!MemoryControl.request(m, true)) continue;
                 final float q = Math.max((float) l, (float) r) / Math.min((float) l, (float) r);
                 if (q < min) {
@@ -329,8 +321,7 @@ public class ArrayStack implements BLOB {
                 if (loopcount > 1000 && min <= maxq && min != Float.MAX_VALUE) break mainloop;
             }
         }
-        if (min > maxq && !((bestMatch[0] != null && bestMatch[0].length() > maxResultSize) || 
-                             (bestMatch[1] != null && bestMatch[1].length() > maxResultSize))) return null;  // Only return null if no oversized files
+        if (min > maxq) return null;
         if (bestMatch[0] == null || bestMatch[1] == null) return null;
         unmountBLOB(bestMatch[1], false);
         unmountBLOB(bestMatch[0], false);
@@ -346,10 +337,25 @@ public class ArrayStack implements BLOB {
     }
 
     /**
-     * Unmount and return the first BLOB file found that exceeds the given max size.
+     * Unmount and return the largest BLOB file exceeding the given size.
      * Returns null when no such file exists.
      */
-    // No explicit unmount by size; use existing smallest/matching policies
+    public synchronized File unmountLargestAbove(final long minSize) {
+        if (this.blobs.isEmpty()) return null;
+        File bestFile = null;
+        long largest = -1;
+        for (int i = 0; i < this.blobs.size(); i++) {
+            final File f = this.blobs.get(i).location;
+            final long len = f.length();
+            if (len > minSize && len > largest) {
+                largest = len;
+                bestFile = f;
+            }
+        }
+        if (bestFile == null) return null;
+        unmountBLOB(bestFile, false);
+        return bestFile;
+    }
 
     public synchronized File[] unmountSmallest(final long maxResultSize) {
     	if (this.blobs.size() < 2) return null;
