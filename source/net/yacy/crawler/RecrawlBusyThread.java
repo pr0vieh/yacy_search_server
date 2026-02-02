@@ -414,25 +414,21 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
         if (docList != null) {
             final Set<String> tobedeletedIDs = new HashSet<>();
+            this.processedUrls.clear();  // Clear at start of each chunk to prevent memory leak
             for (final SolrDocument doc : docList) {
                 try {
                     final String urlStr = (String) doc.getFieldValue(CollectionSchema.sku.getSolrFieldName());
                     final DigestURL url = new DigestURL(urlStr);
 
-                    // Check if URL was already processed in this recrawl job (avoid duplicates)
+                    // Check if URL was already processed in current chunk (avoid duplicates)
                     if (this.processedUrls.contains(url.toNormalform(false))) {
                         this.rejectedUrlsCount++;
-                        ConcurrentLog.fine(THREAD_NAME, "Skipping duplicate URL in recrawl job: " + url.toNormalform(true));
+                        ConcurrentLog.fine(THREAD_NAME, "Skipping duplicate URL in current chunk: " + url.toNormalform(true));
                         continue;
                     }
 
-                    // Mark URL as processed to prevent duplicates
+                    // Mark URL as processed to prevent duplicates within current chunk
                     this.processedUrls.add(url.toNormalform(false));
-
-                    // Clean up processedUrls set periodically to manage memory usage
-                    if (this.processedUrls.size() >= this.processedUrlsCleanupThreshold) {
-                        this.cleanupProcessedUrls();
-                    }
 
                     // Add to urlstack for later feeding to crawler
                     this.urlstack.add(url);
@@ -494,12 +490,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
      * Cleanup the processedUrls set to manage memory usage during long-running recrawl jobs.
      * This is called periodically when the set exceeds the cleanup threshold.
      * Strategy: Clear entries to prevent unbounded growth and memory exhaustion.
+     * NOTE: With chunk-based clearing, this is now a no-op. processedUrls is cleared at the start of each chunk.
      */
     private void cleanupProcessedUrls() {
-        final long currentSize = this.processedUrls.size();
-        this.processedUrls.clear();
-        ConcurrentLog.info(THREAD_NAME, "Cleaned up processedUrls set: freed memory from " + currentSize + " entries. " +
-            "Note: This may allow duplicate URLs if same URL appears in different chunks, but prevents memory exhaustion.");
+        // No-op: processedUrls is now cleared at the start of each chunk in processSingleQuery()
+        // This prevents unbounded growth while tracking duplicates within each chunk.
     }
 
     @Override
