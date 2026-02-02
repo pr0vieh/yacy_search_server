@@ -83,27 +83,53 @@ public class RowSet extends RowCollection implements Index, Iterable<Row.Entry>,
     	if (b.length < exportOverheadSize) return new RowSet(rowdef, 0);
         final int size = (int) NaturalOrder.decodeLong(b, 0, 4);
         assert size >= 0 : "size = " + size;
-        if (size < 0) return new RowSet(rowdef, 0);
+        if (size < 0) {
+            ConcurrentLog.warn("KELONDRO", "RowSet: negative size " + size + " in corrupted BLOB, skipping");
+            return new RowSet(rowdef, 0);
+        }
         final int orderbound = (int) NaturalOrder.decodeLong(b, 10, 4);
         assert orderbound >= 0 : "orderbound = " + orderbound;
         if (orderbound < 0) return new RowSet(rowdef, 0); // error
         final long alloc = ((long) size) * ((long) rowdef.objectsize);
         assert alloc <= Integer.MAX_VALUE : "alloc = " + alloc;
-        if (alloc > Integer.MAX_VALUE) throw new SpaceExceededException(alloc, "importRowSet: alloc (" + alloc + ") > Integer.MAX_VALUE");
-        assert alloc == b.length - exportOverheadSize;
-        final long expected_alloc = (long) b.length - (long) exportOverheadSize;  // Use long to prevent overflow
-        if (alloc != expected_alloc) throw new SpaceExceededException(alloc, "importRowSet: alloc (" + alloc + ") != b.length - exportOverheadSize (" + expected_alloc + ")");
+        if (alloc > Integer.MAX_VALUE) {
+            ConcurrentLog.warn("KELONDRO", "RowSet: alloc (" + alloc + ") > Integer.MAX_VALUE, corrupted BLOB");
+            return new RowSet(rowdef, 0);
+        }
+        
+        // Check for size mismatch - indicates corruption
+        final long expected_alloc = (long) b.length - (long) exportOverheadSize;
+        if (alloc != expected_alloc) {
+            // This can happen with corrupted files where the embedded size is wrong
+            // Try to recover by using the actual file size
+            ConcurrentLog.warn("KELONDRO", "RowSet: size mismatch in BLOB - embedded size (" + alloc + ") != actual data size (" + expected_alloc + "). Attempting recovery with actual size.");
+            if (expected_alloc > Integer.MAX_VALUE) {
+                ConcurrentLog.severe("KELONDRO", "RowSet: actual data size too large (" + expected_alloc + "), skipping corrupted BLOB");
+                return new RowSet(rowdef, 0);
+            }
+            // Use the actual file size as alloc, not the corrupted embedded size
+            final long recovered_size = expected_alloc / (long) rowdef.objectsize;
+            if (recovered_size * (long) rowdef.objectsize != expected_alloc) {
+                ConcurrentLog.warn("KELONDRO", "RowSet: data size not multiple of objectsize, truncating");
+            }
+            
+            MemoryControl.request((int) expected_alloc, true);
+            final byte[] chunkcache;
+            try {
+                chunkcache = new byte[(int) expected_alloc];
+            } catch (final OutOfMemoryError e) {
+                throw new SpaceExceededException(expected_alloc, "importRowSet: OutOfMemoryError requesting " + expected_alloc + " bytes (recovered from corrupted header)");
+            }
+            System.arraycopy(b, (int) exportOverheadSize, chunkcache, 0, chunkcache.length);
+            return new RowSet(rowdef, (int) recovered_size, chunkcache, orderbound);
+        }
+        
         MemoryControl.request((int) alloc, true);
         final byte[] chunkcache;
         try {
             chunkcache = new byte[(int) alloc];
         } catch (final OutOfMemoryError e) {
             throw new SpaceExceededException(alloc, "importRowSet: OutOfMemoryError requesting " + alloc + " bytes");
-        }
-        //assert b.length - exportOverheadSize == size * rowdef.objectsize : "b.length = " + b.length + ", size * rowdef.objectsize = " + size * rowdef.objectsize;
-        if (b.length - exportOverheadSize != alloc) {
-            ConcurrentLog.severe("KELONDRO", "RowSet: exportOverheadSize wrong: b.length = " + b.length + ", size * rowdef.objectsize = " + size * rowdef.objectsize);
-            return new RowSet(rowdef, 0);
         }
         System.arraycopy(b, (int) exportOverheadSize, chunkcache, 0, chunkcache.length);
         return new RowSet(rowdef, size, chunkcache, orderbound);
