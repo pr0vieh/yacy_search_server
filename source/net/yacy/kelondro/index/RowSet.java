@@ -89,15 +89,16 @@ public class RowSet extends RowCollection implements Index, Iterable<Row.Entry>,
         if (orderbound < 0) return new RowSet(rowdef, 0); // error
         final long alloc = ((long) size) * ((long) rowdef.objectsize);
         assert alloc <= Integer.MAX_VALUE : "alloc = " + alloc;
-        if (alloc > Integer.MAX_VALUE) throw new SpaceExceededException((int) alloc, "importRowSet: alloc > Integer.MAX_VALUE");
+        if (alloc > Integer.MAX_VALUE) throw new SpaceExceededException(alloc, "importRowSet: alloc (" + alloc + ") > Integer.MAX_VALUE");
         assert alloc == b.length - exportOverheadSize;
-        if (alloc != b.length - exportOverheadSize) throw new SpaceExceededException((int) alloc, "importRowSet: alloc != b.length - exportOverheadSize");
+        final long expected_alloc = (long) b.length - (long) exportOverheadSize;  // Use long to prevent overflow
+        if (alloc != expected_alloc) throw new SpaceExceededException(alloc, "importRowSet: alloc (" + alloc + ") != b.length - exportOverheadSize (" + expected_alloc + ")");
         MemoryControl.request((int) alloc, true);
         final byte[] chunkcache;
         try {
             chunkcache = new byte[(int) alloc];
         } catch (final OutOfMemoryError e) {
-            throw new SpaceExceededException((int) alloc, "importRowSet: OutOfMemoryError");
+            throw new SpaceExceededException(alloc, "importRowSet: OutOfMemoryError requesting " + alloc + " bytes");
         }
         //assert b.length - exportOverheadSize == size * rowdef.objectsize : "b.length = " + b.length + ", size * rowdef.objectsize = " + size * rowdef.objectsize;
         if (b.length - exportOverheadSize != alloc) {
