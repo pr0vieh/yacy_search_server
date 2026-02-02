@@ -297,7 +297,6 @@ public class ArrayStack implements BLOB {
         File lf, rf;
         float min = Float.MAX_VALUE;
         final File[] bestMatch = new File[2];
-        maxResultSize = maxResultSize >> 1;
     	int loopcount = 0;
         mainloop: for (int i = 0; i < this.blobs.size() - 1; i++) {
             for (int j = i + 1; j < this.blobs.size(); j++) {
@@ -306,9 +305,17 @@ public class ArrayStack implements BLOB {
             	rf = this.blobs.get(j).location;
             	m = this.blobs.get(i).blob.mem();
             	m += this.blobs.get(j).blob.mem();
-                l = 1 + (lf.length() >> 1);
-                r = 1 + (rf.length() >> 1);
-                if (l + r > maxResultSize) continue;
+            	
+            	// Check if either file exceeds maxResultSize - if so, we MUST merge it regardless
+            	// This enforces the hard limit on file size
+            	long lf_size = lf.length();
+            	long rf_size = rf.length();
+            	boolean mustMerge = (lf_size > maxResultSize) || (rf_size > maxResultSize);
+            	
+                l = 1 + (lf_size >> 1);
+                r = 1 + (rf_size >> 1);
+                
+                if (!mustMerge && l + r > maxResultSize) continue;  // Skip if both small and sum too large
                 if (!MemoryControl.request(m, true)) continue;
                 final float q = Math.max((float) l, (float) r) / Math.min((float) l, (float) r);
                 if (q < min) {
@@ -319,7 +326,9 @@ public class ArrayStack implements BLOB {
                 if (loopcount > 1000 && min <= maxq && min != Float.MAX_VALUE) break mainloop;
             }
         }
-        if (min > maxq) return null;
+        if (min > maxq && !((bestMatch[0] != null && bestMatch[0].length() > maxResultSize) || 
+                             (bestMatch[1] != null && bestMatch[1].length() > maxResultSize))) return null;  // Only return null if no oversized files
+        if (bestMatch[0] == null || bestMatch[1] == null) return null;
         unmountBLOB(bestMatch[1], false);
         unmountBLOB(bestMatch[0], false);
         return bestMatch;
