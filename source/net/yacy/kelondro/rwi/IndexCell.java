@@ -64,8 +64,8 @@ import net.yacy.search.Switchboard;
 
 public final class IndexCell<ReferenceType extends Reference> extends AbstractBufferedIndex<ReferenceType> implements BufferedIndex<ReferenceType>, Iterable<ReferenceContainer<ReferenceType>> {
 
-    private static final long cleanupCycle =  50000;
-    private static final long dumpCycle    = 240000;
+    private static final long cleanupCycle =  30000;  // cleanup every 30 seconds (reduced from 50) for more aggressive BLOB size management
+    private static final long dumpCycle    = 120000;  // dump RAM to disk every 2 minutes (reduced from 4) to prevent RAM overflow
 
     // class variables
     private final ReferenceContainerArray<ReferenceType> array;
