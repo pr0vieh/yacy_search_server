@@ -299,6 +299,18 @@ public class HeapReader {
                             log.warn("HeapReader: BLOB " + this.heapFile.getName() + ": skiped not wellformed key " + UTF8.String(key) + " at seek pos " + seek);
                         }
                     }
+                    
+                    // skip the rest of the record (we only need key and position for index)
+                    long skipBytes = reclen - this.keylength;
+                    if (skipBytes > 0) {
+                        long skipped = dis.skip(skipBytes);
+                        while (skipped < skipBytes) {
+                            long s = dis.skip(skipBytes - skipped);
+                            if (s <= 0) break; // can't skip more
+                            skipped += s;
+                        }
+                    }
+                    
                     // new seek position
                     seek += 4L + reclen;
                     
