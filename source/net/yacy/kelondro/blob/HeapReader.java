@@ -271,9 +271,13 @@ public class HeapReader {
                     // read length of the following record without the length of the record size bytes
                     reclen = dis.readInt();
                     
-                    if (reclen == 0) {
-                        // very bad file inconsistency
-                        log.severe("HeapReader: reclen == 0 at seek pos " + seek + " in file " + this.heapFile);
+                    if (reclen <= 0) {
+                        // very bad file inconsistency - reclen must be positive
+                        if (reclen == 0) {
+                            log.severe("HeapReader: reclen == 0 at seek pos " + seek + " in file " + this.heapFile);
+                        } else {
+                            log.severe("HeapReader: reclen < 0 (" + reclen + ") at seek pos " + seek + " in file " + this.heapFile + " - file is corrupted, stopping read");
+                        }
                         break;
                     }
 
