@@ -505,10 +505,17 @@ public class HeapReader {
 
             // access the file and read the container
             this.file.seek(pos);
-            final int len = this.file.readInt() - this.keylength;
+            final int rawLen = this.file.readInt();
+            if (rawLen <= 0) {
+                // database file is corrupted - record size must be positive
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": invalid record size. len = " + rawLen + " (must be > 0)");
+                this.index.remove(key);
+                return null;
+            }
+            final int len = rawLen - this.keylength;
             if (len < 0) {
                 // database file may be corrupted and should be deleted :-((
-                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": negative len. len = " + len + ", pk.len = " + this.keylength);
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": record size (" + rawLen + ") < keylength (" + this.keylength + ")");
                 // to get lazy over that problem (who wants to tell the user to stop operation and delete the file???) we work on like the entry does not exist
                 this.index.remove(key);
                 return null;
