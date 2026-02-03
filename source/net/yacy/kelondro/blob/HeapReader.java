@@ -129,11 +129,57 @@ public class HeapReader {
     }
 
     public long mem() {
-        return this.index.mem(); // don't add the memory for free here since then the asserts for memory management don't work
+        return (this.index == null) ? 0 : this.index.mem(); // don't add the memory for free here since then the asserts for memory management don't work
     }
 
     public void optimize() {
-        this.index.optimize();
+        // Optimize and dump index to disk
+        if (this.index != null) {
+            this.index.optimize();
+            
+            // Write index to dump file for later reload
+            try {
+                File dumpFile = this.fingerprintFileIdx;
+                if (dumpFile == null) {
+                    String fingerprint = fingerprintFileHash(this.heapFile);
+                    if (fingerprint != null) {
+                        dumpFile = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
+                    }
+                }
+                
+                // If dump doesn't exist yet, create it
+                if (dumpFile != null && !dumpFile.exists()) {
+                    this.index.dump(dumpFile);
+                    log.info("HeapReader: dumped index for " + this.heapFile.getName() + " to save memory");
+                }
+                
+                // Free the index from memory - will be reloaded on demand
+                this.index.close();
+                this.index = null;
+                
+                log.info("HeapReader: freed index memory for " + this.heapFile.getName());
+            } catch (final IOException e) {
+                log.warn("HeapReader: could not dump/free index for " + this.heapFile.getName() + ": " + e.getMessage());
+                // Keep index in memory if dump fails
+            }
+        }
+    }
+
+    /**
+     * Reload index from dump if it was freed by optimize()
+     * Called automatically when index is needed but null
+     */
+    private synchronized void ensureIndexLoaded() throws IOException {
+        if (this.index != null) return; // Already loaded
+        
+        log.info("HeapReader: reloading index for " + this.heapFile.getName() + " from dump");
+        
+        // Try to load from dump
+        if (!initIndexReadDump()) {
+            // Dump doesn't exist or is corrupt - regenerate from heap file
+            log.warn("HeapReader: index dump not available, regenerating from " + this.heapFile.getName());
+            initIndexReadFromHeap();
+        }
     }
 
     protected byte[] normalizeKey(byte[] key) {
@@ -379,21 +425,23 @@ public class HeapReader {
      * @return the number of BLOBs in the heap
      */
     public int size() {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
-        if (this.index == null) {
-            log.severe("HeapReader: this.index == null in size(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in size(); " + e.getMessage());
             return 0;
         }
         return (this.index == null) ? 0 : this.index.size();
     }
 
     public boolean isEmpty() {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
-        if (this.index == null) {
-            log.severe("HeapReader: this.index == null in isEmpty(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in isEmpty(); " + e.getMessage());
             return true;
         }
-        return this.index.isEmpty();
+        return (this.index == null) || this.index.isEmpty();
     }
 
     /**
@@ -402,11 +450,13 @@ public class HeapReader {
      * @return true if the key exists, false otherwise
      */
     public boolean containsKey(byte[] key) {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
-        if (this.index == null) {
-            log.severe("HeapReader: this.index == null in containsKey(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in containsKey(); " + e.getMessage());
             return false;
         }
+        if (this.index == null) return false;
         key = normalizeKey(key);
 
         synchronized (this.index) {
@@ -503,11 +553,8 @@ public class HeapReader {
      * @throws IOException
      */
     public byte[] get(byte[] key) throws IOException, SpaceExceededException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
-        if (this.index == null) {
-            log.severe("HeapReader: this.index == null in get(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
-            return null;
-        }
+        ensureIndexLoaded();
+        if (this.index == null) return null;
         key = normalizeKey(key);
 
         synchronized (this.index) {
@@ -724,10 +771,8 @@ public class HeapReader {
      * @throws IOException
      */
     public CloneableIterator<byte[]> keys(final boolean up, final boolean rotating) throws IOException {
-        if (this.index == null) {
-            log.severe("HeapReader: this.index == null in keys(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
-            return null;
-        }
+        ensureIndexLoaded();
+        if (this.index == null) return null;
         synchronized (this.index) {
             return new RotateIterator<byte[]>(this.index.keys(up, null), null, this.index.size());
         }
@@ -741,11 +786,8 @@ public class HeapReader {
      * @throws IOException
      */
     public CloneableIterator<byte[]> keys(final boolean up, final byte[] firstKey) throws IOException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
-        if (this.index == null) {
-            log.severe("HeapReader: this.index == null in keys(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
-            return null;
-        }
+        ensureIndexLoaded();
+        if (this.index == null) return null;
         synchronized (this.index) {
             return this.index.keys(up, firstKey);
         }
