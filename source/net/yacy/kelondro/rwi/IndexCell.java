@@ -96,7 +96,7 @@ public final class IndexCell<ReferenceType extends Reference> extends AbstractBu
         super(factory);
 
         this.merger = merger;
-        this.array = new ReferenceContainerArray<ReferenceType>(cellPath, prefix, factory, termOrder, termSize);
+        this.array = new ReferenceContainerArray<ReferenceType>(cellPath, prefix, factory, termOrder, termSize, maxFileSize);
         this.ram = new ReferenceContainerCache<ReferenceType>(factory, termOrder, termSize);
         this.countCache = new ComparableARC<byte[], Integer>(1000, termOrder);
         this.maxRamEntries = maxRamEntries;

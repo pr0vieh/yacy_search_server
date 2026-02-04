@@ -64,6 +64,26 @@ public final class ReferenceContainerArray<ReferenceType extends Reference> {
     		final ReferenceFactory<ReferenceType> factory,
     		final ByteOrder termOrder,
     		final int termSize) throws IOException {
+        this(heapLocation, prefix, factory, termOrder, termSize, Long.MAX_VALUE);
+    }
+
+    /**
+     * open a index container array with configurable max file size
+     * @param heapLocation location of the BLOB files
+     * @param prefix prefix for BLOB file names
+     * @param factory the reference factory
+     * @param termOrder byte order for terms
+     * @param termSize size of terms
+     * @param maxFileSize maximum file size for BLOB files (from filesize.max.* config)
+     * @throws IOException
+     */
+    public ReferenceContainerArray(
+    		final File heapLocation,
+    		final String prefix,
+    		final ReferenceFactory<ReferenceType> factory,
+    		final ByteOrder termOrder,
+    		final int termSize,
+    		final long maxFileSize) throws IOException {
         this.factory = factory;
         this.array = new ArrayStack(
             heapLocation,
@@ -72,7 +92,8 @@ public final class ReferenceContainerArray<ReferenceType extends Reference> {
             termSize,
             0,
             true,
-            true);
+            true,
+            maxFileSize);
     }
 
     public synchronized void close() {

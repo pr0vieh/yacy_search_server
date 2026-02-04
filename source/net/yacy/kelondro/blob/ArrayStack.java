@@ -231,7 +231,7 @@ public class ArrayStack implements BLOB {
         }
         if (deletions) files = heapLocation.list(); // make a fresh list
 
-        // Pre-load split: break oversized BLOBs (> 2GB) into smaller pieces
+        // Pre-load split: break oversized BLOBs (exceeding fileSizeLimit) into smaller pieces
         // This prevents startup crashes when loading huge legacy BLOBs
         files = presplitOversizedBLOBs(files);
 
@@ -347,7 +347,7 @@ public class ArrayStack implements BLOB {
     }
 
     /**
-     * Pre-load splitter: detects and splits oversized BLOBs (>2GB) into smaller pieces
+     * Pre-load splitter: detects and splits oversized BLOBs (exceeding fileSizeLimit) into smaller pieces
      * Prevents heap overflow and corruption when loading legacy large BLOBs
      * @param files list of blob files to process
      * @return updated file list with split BLOBs
@@ -366,8 +366,8 @@ public class ArrayStack implements BLOB {
 
         // Split oversized files
         if (!filesNeedingSplit.isEmpty()) {
-            ConcurrentLog.warn("KELONDRO", "ArrayStack: found " + filesNeedingSplit.size() + 
-                " oversized BLOBs (>2GB), splitting into smaller pieces...");
+            ConcurrentLog.warn("KELONDRO", "ArrayStack: found " + filesNeedingSplit.size() +
+                " oversized BLOBs (>" + (this.fileSizeLimit / 1024 / 1024 / 1024) + "GB), splitting into smaller pieces...");
             
             for (final String file : filesNeedingSplit) {
                 try {
