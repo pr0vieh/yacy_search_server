@@ -101,6 +101,7 @@ public class ArrayStack implements BLOB {
     private       long           repositoryAgeMax;
     private       long           repositorySizeMax;
     private       List<blobItem> blobs;
+    private       boolean        isShutdown = false;  // Flag to suppress mountBLOB errors during shutdown
     private final String         prefix;
     private final int            buffersize;
     private final boolean        trimall;
@@ -486,8 +487,26 @@ public class ArrayStack implements BLOB {
      * @throws IOException
      */
     public synchronized void mountBLOB(final File location, final boolean full) throws IOException {
+        // During shutdown, blobs will be set to null - just silently return instead of throwing exception
+        if (this.isShutdown) {
+            return;
+        }
+        
+        // Retry with backoff if ArrayStack is not yet initialized (during parallel BLOB loading)
+        // This can happen if IODispatcher tasks start before constructor is complete
+        int retryCount = 0;
+        while (this.blobs == null && retryCount < 10) {
+            try {
+                wait(100 + (retryCount * 50)); // Exponential backoff: 100ms, 150ms, 200ms, ...
+                retryCount++;
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("mountBLOB interrupted while waiting for ArrayStack initialization", e);
+            }
+        }
+        
         if (this.blobs == null) {
-            throw new IOException("ArrayStack is closed and cannot mount new BLOBs");
+            throw new IOException("ArrayStack initialization timed out, cannot mount new BLOBs");
         }
         Date d;
         try {
@@ -1163,6 +1182,7 @@ public class ArrayStack implements BLOB {
      */
     @Override
     public synchronized void close(final boolean writeIDX) {
+        this.isShutdown = true;  // Signal that shutdown is in progress
         for (final blobItem bi: this.blobs) bi.blob.close(writeIDX);
         this.blobs.clear();
         this.blobs = null;
