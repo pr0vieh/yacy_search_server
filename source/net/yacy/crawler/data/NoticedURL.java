@@ -30,6 +30,7 @@ package net.yacy.crawler.data;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -319,6 +320,8 @@ public class NoticedURL {
     /**
      * Batch shift multiple entries from one stack to another in one operation.
      * More efficient than calling shift() multiple times as it reduces I/O operations.
+     * Optimized to prefer diverse domains: distributes shifts across different hosts
+     * to improve parallelization and reduce robots.txt blocking.
      * @param fromStack source stack
      * @param toStack destination stack
      * @param count maximum number of entries to shift
@@ -330,14 +333,60 @@ public class NoticedURL {
         if (count <= 0) return 0;
         int shifted = 0;
         try {
-            for (int i = 0; i < count; i++) {
-                final Request entry = this.pop(fromStack, false, cs, robots);
-                if (entry == null) break; // no more entries available
-                final String warning = this.push(toStack, entry, null, robots);
-                if (warning != null) {
-                    ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+            // Get domain distribution to prefer diverse hosts when shifting
+            final Map<String, Integer[]> domainHosts = this.getDomainStackHosts(fromStack, robots);
+            
+            // For domain-diverse shifting: cycle through domains rather than just popping sequentially
+            // This prevents situations where we shift many URLs from the same domain
+            if (domainHosts.size() > 1) {
+                final List<String> hosts = new ArrayList<>(domainHosts.keySet());
+                int hostIndex = 0;
+                final int maxAttempts = count * 3; // prevent infinite loops on small stacks
+                int attempts = 0;
+                
+                // Cycle through different hosts to get diverse URLs
+                while (shifted < count && attempts < maxAttempts) {
+                    attempts++;
+                    final String host = hosts.get(hostIndex % hosts.size());
+                    hostIndex++;
+                    
+                    // Try to get a URL from this host
+                    final List<Request> hostUrls = this.getDomainStackReferences(fromStack, host, 1, Long.MAX_VALUE);
+                    if (!hostUrls.isEmpty()) {
+                        final Request entry = hostUrls.get(0);
+                        // Actually remove it from source stack
+                        final Request popped = this.pop(fromStack, false, cs, robots);
+                        if (popped != null) {
+                            final String warning = this.push(toStack, popped, null, robots);
+                            if (warning != null) {
+                                ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                            }
+                            shifted++;
+                        }
+                    }
                 }
-                shifted++;
+                
+                // Fall back to simple sequential shifting if domain-diverse approach doesn't yield enough
+                while (shifted < count) {
+                    final Request entry = this.pop(fromStack, false, cs, robots);
+                    if (entry == null) break;
+                    final String warning = this.push(toStack, entry, null, robots);
+                    if (warning != null) {
+                        ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                    }
+                    shifted++;
+                }
+            } else {
+                // Only one domain or empty - just shift sequentially
+                for (int i = 0; i < count; i++) {
+                    final Request entry = this.pop(fromStack, false, cs, robots);
+                    if (entry == null) break;
+                    final String warning = this.push(toStack, entry, null, robots);
+                    if (warning != null) {
+                        ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                    }
+                    shifted++;
+                }
             }
         } catch (final IOException e) {
             ConcurrentLog.warn("NoticedURL", "shiftBatch interrupted after " + shifted + " entries: " + e.getMessage());
