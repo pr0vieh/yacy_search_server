@@ -304,8 +304,9 @@ public class HeapReader {
         
         // Use buffered stream reading instead of RandomAccessFile.seek() for 100x+ performance
         // RandomAccessFile.seek() is called for EVERY record (29M+ times), which is extremely slow
+        int bufferSize = 16 * 1024 * 1024; // 16MB buffer
         FileInputStream fis = new FileInputStream(this.heapFile);
-        BufferedInputStream bis = new BufferedInputStream(fis, 16 * 1024 * 1024); // 16MB buffer for good throughput
+        BufferedInputStream bis = new BufferedInputStream(fis, bufferSize);
         DataInputStream dis = new DataInputStream(bis);
         
         try {

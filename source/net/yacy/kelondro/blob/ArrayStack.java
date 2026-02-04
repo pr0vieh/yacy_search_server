@@ -111,6 +111,23 @@ public class ArrayStack implements BLOB {
     // use our own formatter to prevent concurrency locks with other processes
     private final static GenericFormatter my_SHORT_MILSEC_FORMATTER  = new GenericFormatter(GenericFormatter.newShortMilsecFormat(), 1);
 
+    /**
+     * Result container for parallel BLOB initialization
+     */
+    private static class BlobInitResult {
+        final Date date;
+        final File file;
+        final BLOB blob;
+        final long time;
+        
+        BlobInitResult(final Date date, final File file, final BLOB blob, final long time) {
+            this.date = date;
+            this.file = file;
+            this.blob = blob;
+            this.time = time;
+        }
+    }
+
 
     public ArrayStack(
             final File heapLocation,
@@ -156,9 +173,12 @@ public class ArrayStack implements BLOB {
         this.trimall = trimall;
 
         // init the thread pool for the keeperOf executor service
+        // Limit parallel BLOB initialization to 2-3 threads to avoid memory issues
+        // Each HeapReader loads a large index into memory, so too many parallel loads could cause OOM
+        final int maxParallelBlobLoads = Math.min(3, Math.max(2, Runtime.getRuntime().availableProcessors() / 2));
         this.executor = new ThreadPoolExecutor(
         		1,
-        		Runtime.getRuntime().availableProcessors(), 100,
+        		maxParallelBlobLoads, 100,
         		TimeUnit.MILLISECONDS,
         		new LinkedBlockingQueue<Runnable>(),
         		new NamePrefixThreadFactory(this.prefix));
@@ -228,32 +248,79 @@ public class ArrayStack implements BLOB {
                } catch (final ParseException e) {continue;}
             }
         }
+        final long finalMaxtime = maxtime; // Make final for use in inner class
 
-        // open all blob files
+        // open all blob files in parallel for better CPU utilization during index generation
+        final CompletionService<BlobInitResult> completionService = new ExecutorCompletionService<BlobInitResult>(this.executor);
+        final List<String> blobFilesToLoad = new ArrayList<String>();
+        
+        // Collect all blob files to load
         for (final String file : files) {
             if (file.length() >= 22 && file.charAt(this.prefix.length()) == '.' && file.endsWith(".blob")) {
-                try {
-                   d = my_SHORT_MILSEC_FORMATTER.parse(file.substring(this.prefix.length() + 1, this.prefix.length() + 18), 0).getTime();
-                   f = new File(heapLocation, file);
-                   time = d.getTime();
-                   try {
-                       if (time == maxtime && !trimall) {
-                           oneBlob = new Heap(f, keylength, ordering, buffersize);
-                       } else {
-                           oneBlob = new HeapModifier(f, keylength, ordering);
-                           oneBlob.optimize(); // no writings here, can be used with minimum memory
-                       }
-                       sortedItems.put(Long.valueOf(time), new blobItem(d, f, oneBlob));
-                   } catch (final IOException e) {
-                       if (deleteonfail) {
-                           ConcurrentLog.warn("KELONDRO", "ArrayStack: cannot read file " + f.getName() + ", deleting it (smart fail; alternative would be: crash; required user action would be same as deletion)");
-                           f.delete();
-                       } else {
-                           throw new IOException(e.getMessage(), e);
-                       }
-                   }
-               } catch (final ParseException e) {continue;}
+                blobFilesToLoad.add(file);
             }
+        }
+        
+        // Submit parallel loading tasks
+        final int tasksSubmitted = blobFilesToLoad.size();
+        if (tasksSubmitted > 0) {
+            ConcurrentLog.info("KELONDRO", "ArrayStack: loading " + tasksSubmitted + " BLOB files in parallel...");
+        }
+        
+        for (final String file : blobFilesToLoad) {
+            completionService.submit(new Callable<BlobInitResult>() {
+                @Override
+                public BlobInitResult call() throws Exception {
+                    try {
+                        final Date d = my_SHORT_MILSEC_FORMATTER.parse(file.substring(prefix.length() + 1, prefix.length() + 18), 0).getTime();
+                        final File f = new File(heapLocation, file);
+                        final long time = d.getTime();
+                        
+                        BLOB oneBlob;
+                        if (time == finalMaxtime && !trimall) {
+                            oneBlob = new Heap(f, keylength, ordering, buffersize);
+                        } else {
+                            oneBlob = new HeapModifier(f, keylength, ordering);
+                            oneBlob.optimize(); // no writings here, can be used with minimum memory
+                        }
+                        
+                        return new BlobInitResult(d, f, oneBlob, time);
+                    } catch (final IOException e) {
+                        if (deleteonfail) {
+                            final File f = new File(heapLocation, file);
+                            ConcurrentLog.warn("KELONDRO", "ArrayStack: cannot read file " + f.getName() + ", deleting it (smart fail; alternative would be: crash; required user action would be same as deletion)");
+                            f.delete();
+                            return null; // Mark as failed
+                        } else {
+                            throw e;
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Collect results from parallel loading
+        for (int i = 0; i < tasksSubmitted; i++) {
+            try {
+                final Future<BlobInitResult> future = completionService.take();
+                final BlobInitResult result = future.get();
+                if (result != null) {
+                    sortedItems.put(Long.valueOf(result.time), new blobItem(result.date, result.file, result.blob));
+                }
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("BLOB initialization interrupted", e);
+            } catch (final ExecutionException e) {
+                if (deleteonfail) {
+                    ConcurrentLog.warn("KELONDRO", "ArrayStack: BLOB initialization failed, skipping: " + e.getCause().getMessage());
+                } else {
+                    throw new IOException("BLOB initialization failed", e.getCause());
+                }
+            }
+        }
+        
+        if (tasksSubmitted > 0) {
+            ConcurrentLog.info("KELONDRO", "ArrayStack: completed parallel loading of " + sortedItems.size() + " BLOB files");
         }
 
         // read the blob tree in a sorted way and write them into an array
@@ -593,7 +660,8 @@ public class ArrayStack implements BLOB {
 
     public void setMaxSize(final long maxSize) {
         this.repositorySizeMax = maxSize;
-        this.fileSizeLimit = Math.min(maxFileSize, maxSize / 100L);
+        // Use maxFileSize directly instead of dividing by 100
+        this.fileSizeLimit = this.maxFileSize;
         executeLimits();
     }
 
