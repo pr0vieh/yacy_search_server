@@ -316,6 +316,35 @@ public class NoticedURL {
         }
     }
 
+    /**
+     * Batch shift multiple entries from one stack to another in one operation.
+     * More efficient than calling shift() multiple times as it reduces I/O operations.
+     * @param fromStack source stack
+     * @param toStack destination stack
+     * @param count maximum number of entries to shift
+     * @param cs crawl switchboard
+     * @param robots robots.txt handler
+     * @return actual number of entries shifted
+     */
+    protected int shiftBatch(final StackType fromStack, final StackType toStack, final int count, final CrawlSwitchboard cs, final RobotsTxt robots) {
+        if (count <= 0) return 0;
+        int shifted = 0;
+        try {
+            for (int i = 0; i < count; i++) {
+                final Request entry = this.pop(fromStack, false, cs, robots);
+                if (entry == null) break; // no more entries available
+                final String warning = this.push(toStack, entry, null, robots);
+                if (warning != null) {
+                    ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                }
+                shifted++;
+            }
+        } catch (final IOException e) {
+            ConcurrentLog.warn("NoticedURL", "shiftBatch interrupted after " + shifted + " entries: " + e.getMessage());
+        }
+        return shifted;
+    }
+
     public void clear(final StackType stackType) {
         ConcurrentLog.info("NoticedURL", "CLEARING STACK " + stackType);
         switch (stackType) {
