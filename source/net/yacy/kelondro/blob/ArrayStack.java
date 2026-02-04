@@ -114,6 +114,8 @@ public class ArrayStack implements BLOB {
 
     // Defer index loading for faster startup (can be disabled with -Dyacy.blob.lazyIndexLoad=false)
     private static final boolean LAZY_BLOB_INDEX_LOAD = Boolean.parseBoolean(System.getProperty("yacy.blob.lazyIndexLoad", "true"));
+    // Optional background warm-up to load/optimize indexes after startup (disable with -Dyacy.blob.warmup=false)
+    private static final boolean BLOB_WARMUP = Boolean.parseBoolean(System.getProperty("yacy.blob.warmup", "true"));
 
     /**
      * Result container for parallel BLOB initialization
@@ -337,6 +339,10 @@ public class ArrayStack implements BLOB {
         this.blobs = new CopyOnWriteArrayList<blobItem>();
         for (final blobItem bi : sortedItems.values()) {
             this.blobs.add(bi);
+        }
+
+        if (LAZY_BLOB_INDEX_LOAD && BLOB_WARMUP) {
+            startWarmUpInBackground();
         }
     }
 
@@ -748,6 +754,37 @@ public class ArrayStack implements BLOB {
             this.location = newBLOB(this.creation);
             this.blob = (buffer == 0) ? new HeapModifier(this.location, ArrayStack.this.keylength, ArrayStack.this.ordering) : new Heap(this.location, ArrayStack.this.keylength, ArrayStack.this.ordering, buffer);
         }
+    }
+
+    private void startWarmUpInBackground() {
+        final Thread warmupThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                if (ArrayStack.this.blobs == null || ArrayStack.this.blobs.isEmpty()) return;
+                ConcurrentLog.info("KELONDRO", "ArrayStack: starting background warm-up for " + ArrayStack.this.blobs.size() + " BLOB files");
+                int warmed = 0;
+                for (final blobItem bi : ArrayStack.this.blobs) {
+                    if (ArrayStack.this.isShutdown) break;
+                    if (bi == null || bi.blob == null) continue;
+                    if (bi.blob instanceof Heap) {
+                        // Skip optimize for active writer blobs
+                        continue;
+                    }
+                    if (bi.blob instanceof HeapReader) {
+                        try {
+                            ((HeapReader) bi.blob).warmUp(true);
+                            warmed++;
+                        } catch (final IOException e) {
+                            ConcurrentLog.warn("KELONDRO", "ArrayStack: warm-up failed for " + bi.location.getName() + ": " + e.getMessage());
+                        }
+                    }
+                }
+                ConcurrentLog.info("KELONDRO", "ArrayStack: background warm-up completed for " + warmed + " BLOB files");
+            }
+        }, "ArrayStack-warmup-" + this.prefix);
+        warmupThread.setDaemon(true);
+        warmupThread.setPriority(Thread.MIN_PRIORITY);
+        warmupThread.start();
     }
 
     /**

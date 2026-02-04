@@ -195,6 +195,18 @@ public class HeapReader {
         }
     }
 
+    /**
+     * Warm-up helper: load index on demand, optionally optimize and free it again.
+     * @param optimizeAfter when true, dumps index and frees memory after load
+     * @throws IOException when index load fails
+     */
+    public void warmUp(final boolean optimizeAfter) throws IOException {
+        ensureIndexLoaded();
+        if (optimizeAfter) {
+            optimize();
+        }
+    }
+
     protected byte[] normalizeKey(byte[] key) {
         // check size of key: zero-filled keys are only possible of the ordering is
         // an instance of the natural ordering. Base64-orderings cannot use zeros in keys.
