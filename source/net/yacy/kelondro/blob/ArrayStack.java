@@ -112,6 +112,9 @@ public class ArrayStack implements BLOB {
     // use our own formatter to prevent concurrency locks with other processes
     private final static GenericFormatter my_SHORT_MILSEC_FORMATTER  = new GenericFormatter(GenericFormatter.newShortMilsecFormat(), 1);
 
+    // Defer index loading for faster startup (can be disabled with -Dyacy.blob.lazyIndexLoad=false)
+    private static final boolean LAZY_BLOB_INDEX_LOAD = Boolean.parseBoolean(System.getProperty("yacy.blob.lazyIndexLoad", "true"));
+
     /**
      * Result container for parallel BLOB initialization
      */
@@ -251,6 +254,10 @@ public class ArrayStack implements BLOB {
         }
         final long finalMaxtime = maxtime; // Make final for use in inner class
 
+        if (LAZY_BLOB_INDEX_LOAD) {
+            ConcurrentLog.info("KELONDRO", "ArrayStack: lazy index loading enabled; BLOB indexes will be initialized on first access");
+        }
+
         // open all blob files in parallel for better CPU utilization during index generation
         final CompletionService<BlobInitResult> completionService = new ExecutorCompletionService<BlobInitResult>(this.executor);
         final List<String> blobFilesToLoad = new ArrayList<String>();
@@ -281,8 +288,10 @@ public class ArrayStack implements BLOB {
                         if (time == finalMaxtime && !trimall) {
                             oneBlob = new Heap(f, keylength, ordering, buffersize);
                         } else {
-                            oneBlob = new HeapModifier(f, keylength, ordering);
-                            oneBlob.optimize(); // no writings here, can be used with minimum memory
+                            oneBlob = new HeapModifier(f, keylength, ordering, LAZY_BLOB_INDEX_LOAD);
+                            if (!LAZY_BLOB_INDEX_LOAD) {
+                                oneBlob.optimize(); // no writings here, can be used with minimum memory
+                            }
                         }
                         
                         return new BlobInitResult(d, f, oneBlob, time);
@@ -518,8 +527,10 @@ public class ArrayStack implements BLOB {
         if (full && this.buffersize > 0 && !this.trimall) {
             oneBlob = new Heap(location, this.keylength, this.ordering, this.buffersize);
         } else {
-            oneBlob = new HeapModifier(location, this.keylength, this.ordering);
-            oneBlob.optimize();
+            oneBlob = new HeapModifier(location, this.keylength, this.ordering, LAZY_BLOB_INDEX_LOAD);
+            if (!LAZY_BLOB_INDEX_LOAD) {
+                oneBlob.optimize();
+            }
         }
         this.blobs.add(new blobItem(d, location, oneBlob));
     }

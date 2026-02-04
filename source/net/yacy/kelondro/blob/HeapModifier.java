@@ -58,6 +58,10 @@ public class HeapModifier extends HeapReader implements BLOB {
         super(heapFile, keylength, ordering);
     }
 
+    public HeapModifier(final File heapFile, final int keylength, final ByteOrder ordering, final boolean lazyInit) throws IOException {
+        super(heapFile, keylength, ordering, lazyInit);
+    }
+
     /**
      * clears the content of the database
      * @throws IOException

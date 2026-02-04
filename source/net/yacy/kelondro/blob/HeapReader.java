@@ -77,6 +77,14 @@ public class HeapReader {
             final File heapFile,
             final int keylength,
             final ByteOrder ordering) throws IOException {
+        this(heapFile, keylength, ordering, false);
+    }
+
+    public HeapReader(
+            final File heapFile,
+            final int keylength,
+            final ByteOrder ordering,
+            final boolean lazyInit) throws IOException {
         this.ordering = ordering;
         this.heapFile = heapFile;
         this.keylength = keylength;
@@ -85,6 +93,11 @@ public class HeapReader {
         this.heapFile.getParentFile().mkdirs();
         this.file = new CachedFileWriter(this.heapFile);
         this.closeDate = null;
+
+        if (lazyInit) {
+            log.info("HeapReader: lazy index initialization enabled for " + this.heapFile.toString());
+            return;
+        }
 
         // read or initialize the index
         this.fingerprintFileIdx = null;
@@ -478,7 +491,12 @@ public class HeapReader {
      * @throws IOException
      */
     protected synchronized byte[] firstKey() throws IOException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in firstKey(); " + e.getMessage());
+            return null;
+        }
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in firstKey(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
             return null;
@@ -496,7 +514,12 @@ public class HeapReader {
      * @throws IOException
      */
     protected byte[] first() throws IOException, SpaceExceededException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in first(); " + e.getMessage());
+            return null;
+        }
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in first(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
             return null;
@@ -516,12 +539,16 @@ public class HeapReader {
      * @throws IOException
      */
     protected byte[] lastKey() throws IOException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in lastKey(); " + e.getMessage());
+            return null;
+        }
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in lastKey(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
             return null;
         }
-        if (this.index == null) return null;
         synchronized (this.index) {
             return this.index.largestKey();
         }
@@ -535,7 +562,12 @@ public class HeapReader {
      * @throws IOException
      */
     protected byte[] last() throws IOException, SpaceExceededException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in last(); " + e.getMessage());
+            return null;
+        }
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in last(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
             return null;
@@ -655,7 +687,12 @@ public class HeapReader {
      * @throws IOException
      */
     public long length(byte[] key) throws IOException {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in length(byte[]); " + e.getMessage());
+            return 0;
+        }
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in length(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
             return 0;
@@ -795,7 +832,12 @@ public class HeapReader {
     }
 
     public long length() {
-        assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.severe("HeapReader: cannot load index in length(); " + e.getMessage());
+            return 0;
+        }
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in length(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
             return 0;
