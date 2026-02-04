@@ -283,13 +283,31 @@ public class CrawlQueues {
 
         if ((robinsonPrivateCase || this.coreCrawlJobSize() <= 20) && this.limitCrawlJobSize() > 0) {
             // move some tasks to the core crawl job so we have something to do
-            final int toshift = Math.min(10, this.limitCrawlJobSize()); // this cannot be a big number because the balancer makes a forced waiting if it cannot balance
-            for (int i = 0; i < toshift; i++) {
-                this.noticeURL.shift(NoticedURL.StackType.GLOBAL, NoticedURL.StackType.LOCAL, this.sb.crawler, this.sb.robots);
+            // Intelligent shift size: more URLs when queue is nearly empty, less when already filled
+            // Depth-1 crawls typically have diverse hosts, so we can shift more without balancer blocking
+            final int coreSize = this.coreCrawlJobSize();
+            final int limitSize = this.limitCrawlJobSize();
+            final int toshift;
+            if (coreSize <= 5) {
+                // Queue nearly empty - shift more aggressively (up to 50)
+                toshift = Math.min(50, limitSize);
+            } else if (coreSize <= 10) {
+                // Queue low - shift moderately (up to 30)
+                toshift = Math.min(30, limitSize);
+            } else {
+                // Queue has items - shift conservatively (up to 15)
+                toshift = Math.min(15, limitSize);
             }
-            CrawlQueues.log.info("shifted " + toshift + " jobs from global crawl to local crawl (coreCrawlJobSize()=" + this.coreCrawlJobSize() +
-                    ", limitCrawlJobSize()=" + this.limitCrawlJobSize() + ", cluster.mode=" + this.sb.getConfig(SwitchboardConstants.CLUSTER_MODE, "") +
-                    ", robinsonMode=" + ((this.sb.isRobinsonMode()) ? "on" : "off"));
+            
+            if (toshift > 0) {
+                // Use batch shift for better performance (single operation instead of N individual shifts)
+                final int actualShifted = this.noticeURL.shiftBatch(NoticedURL.StackType.GLOBAL, NoticedURL.StackType.LOCAL, toshift, this.sb.crawler, this.sb.robots);
+                if (actualShifted > 0) {
+                    CrawlQueues.log.info("shifted " + actualShifted + " jobs from global crawl to local crawl (coreCrawlJobSize()=" + this.coreCrawlJobSize() +
+                            ", limitCrawlJobSize()=" + this.limitCrawlJobSize() + ", cluster.mode=" + this.sb.getConfig(SwitchboardConstants.CLUSTER_MODE, "") +
+                            ", robinsonMode=" + ((this.sb.isRobinsonMode()) ? "on" : "off"));
+                }
+            }
         }
 
         final String queueCheckCore = this.loadIsPossible(NoticedURL.StackType.LOCAL);
