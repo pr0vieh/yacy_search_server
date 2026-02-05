@@ -612,14 +612,27 @@ public class ArrayStack implements BLOB {
     /**
      * Unmount and return the largest BLOB file exceeding or equal to the given size.
      * Returns null when no such file exists.
+     * Skips files younger than 5 minutes to avoid rewrite loops when shrinkReferences() 
+     * doesn't reduce size significantly.
      */
     public synchronized File unmountLargestAbove(final long minSize) {
         if (this.blobs.isEmpty()) return null;
         File bestFile = null;
         long largest = -1;
+        final long now = System.currentTimeMillis();
+        final long gracePeriod = 5 * 60 * 1000; // 5 minutes in milliseconds
+        
         for (int i = 0; i < this.blobs.size(); i++) {
-            final File f = this.blobs.get(i).location;
+            final blobItem bi = this.blobs.get(i);
+            final File f = bi.location;
             final long len = f.length();
+            
+            // Skip files younger than grace period to avoid rewrite loops
+            final long fileAge = now - bi.creation.getTime();
+            if (fileAge < gracePeriod) {
+                continue;
+            }
+            
             if (len >= minSize && len > largest) {
                 largest = len;
                 bestFile = f;

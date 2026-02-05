@@ -50,6 +50,7 @@ public final class HeapWriter {
     private final File         heapFileREADY; // the final file of the heap when the file is closed
     private DataOutputStream   os;            // the output stream where the BLOB is written
     private long               seek;          // the current write position
+    private boolean            warnedAbout2GBLimit; // flag to avoid log spam
     //private HashSet<String>    doublecheck;// only for testing
 
     /*
@@ -100,6 +101,7 @@ public final class HeapWriter {
         	throw e;
         }
         this.seek = 0;
+        this.warnedAbout2GBLimit = false;
     }
 
     /**
@@ -118,15 +120,15 @@ public final class HeapWriter {
         assert this.index.get(key) < 0 : "index.get(key) = " + this.index.get(key) + ", index.size() = " + this.index.size() + ", file.length() = " + this.heapFileTMP.length() +  ", key = " + UTF8.String(key); // must not occur before
         if ((blob == null) || (blob.length == 0)) return;
         
-        // Warning check: Log when approaching or exceeding 2GB limit
+        // Warning check: Log when approaching or exceeding 2GB limit (only once per file)
         // This should not happen in normal operation due to checks in ArrayStack.insert() and unmountBestMatch()
         // But we allow it for rewriting legacy oversized BLOBs that need cleanup
         int chunkl = this.keylength + blob.length;
         long newSeek = this.seek + chunkl + 4;
-        if (newSeek > Integer.MAX_VALUE) {
-            log.warn("HeapWriter: File " + this.heapFileREADY.getName() + " exceeding 2GB limit! Current: " + 
-                this.seek + ", adding: " + (chunkl + 4) + ", total: " + newSeek + 
-                ". This may indicate a merge of oversized BLOBs or insufficient shrinkReferences() cleanup.");
+        if (newSeek > Integer.MAX_VALUE && !this.warnedAbout2GBLimit) {
+            this.warnedAbout2GBLimit = true;
+            log.warn("HeapWriter: File " + this.heapFileREADY.getName() + " exceeding 2GB limit at " + 
+                (newSeek / 1024 / 1024) + " MB. This file is from legacy oversized BLOB rewrite/merge.");
         }
         
         this.index.putUnique(key, this.seek);
