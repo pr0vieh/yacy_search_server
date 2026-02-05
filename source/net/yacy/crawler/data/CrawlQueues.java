@@ -282,30 +282,30 @@ public class CrawlQueues {
                 !this.sb.getConfig(SwitchboardConstants.CLUSTER_MODE, "").equals(SwitchboardConstants.CLUSTER_MODE_PUBLIC_CLUSTER));
 
         // Shift from global to local queue when local queue is not too full
-        // Target: Keep queue at 100-200 jobs for optimal throughput
-        // Increased threshold to 200 to maintain sufficient workload
-        if ((robinsonPrivateCase || this.coreCrawlJobSize() <= 200) && this.limitCrawlJobSize() > 0) {
+        // Target: Keep queue at ~65 jobs for recrawl thread compatibility
+        // Reduced threshold to 65 to keep recrawl thread active (it pauses above 100)
+        if ((robinsonPrivateCase || this.coreCrawlJobSize() <= 65) && this.limitCrawlJobSize() > 0) {
             // move some tasks to the core crawl job so we have something to do
             // Intelligent shift size: more URLs when queue is low, less when approaching target
             // Depth-1 crawls typically have diverse hosts, so we can shift more without balancer blocking
             final int coreSize = this.coreCrawlJobSize();
             final int limitSize = this.limitCrawlJobSize();
             final int toshift;
-            if (coreSize < 50) {
-                // Queue very low - shift aggressively to reach minimum target (up to 100)
-                toshift = Math.min(100, limitSize);
-            } else if (coreSize < 100) {
-                // Queue below target - shift moderately to reach 100-200 range (up to 50)
-                toshift = Math.min(50, limitSize);
-            } else if (coreSize < 150) {
-                // Queue in lower target range - shift to maintain level (up to 30)
-                toshift = Math.min(30, limitSize);
-            } else if (coreSize < 200) {
-                // Queue approaching upper target - shift conservatively (up to 20)
-                toshift = Math.min(20, limitSize);
+            if (coreSize < 10) {
+                // Queue very low - shift aggressively (up to 40)
+                toshift = Math.min(40, limitSize);
+            } else if (coreSize < 30) {
+                // Queue low - shift moderately (up to 25)
+                toshift = Math.min(25, limitSize);
+            } else if (coreSize < 50) {
+                // Queue below target - shift conservatively (up to 15)
+                toshift = Math.min(15, limitSize);
+            } else if (coreSize < 65) {
+                // Queue near target - shift minimally (up to 8)
+                toshift = Math.min(8, limitSize);
             } else {
-                // Queue at or above target - shift minimally to avoid overfill (up to 10)
-                toshift = Math.min(10, limitSize);
+                // Queue at or above target - shift minimally to avoid overfill (up to 5)
+                toshift = Math.min(5, limitSize);
             }
             
             if (toshift > 0) {
