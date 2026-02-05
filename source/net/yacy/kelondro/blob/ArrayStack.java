@@ -579,8 +579,10 @@ public class ArrayStack implements BLOB {
                 rf = this.blobs.get(j).location;
                 m = this.blobs.get(i).blob.mem();
                 m += this.blobs.get(j).blob.mem();
-                l = 1 + (lf.length() >> 1);
-                r = 1 + (rf.length() >> 1);
+                l = lf.length();
+                r = rf.length();
+                // Conservative check: reject merge if combined size exceeds limit
+                // (Old heuristic used >>1 assuming deduplication, but caused 8GB merges)
                 if (l + r > maxResultSize) continue;
                 if (!MemoryControl.request(m, true)) continue;
                 final float q = Math.max((float) l, (float) r) / Math.min((float) l, (float) r);
@@ -608,7 +610,7 @@ public class ArrayStack implements BLOB {
     }
 
     /**
-     * Unmount and return the largest BLOB file exceeding the given size.
+     * Unmount and return the largest BLOB file exceeding or equal to the given size.
      * Returns null when no such file exists.
      */
     public synchronized File unmountLargestAbove(final long minSize) {
@@ -618,7 +620,7 @@ public class ArrayStack implements BLOB {
         for (int i = 0; i < this.blobs.size(); i++) {
             final File f = this.blobs.get(i).location;
             final long len = f.length();
-            if (len > minSize && len > largest) {
+            if (len >= minSize && len > largest) {
                 largest = len;
                 bestFile = f;
             }

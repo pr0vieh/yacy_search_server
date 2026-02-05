@@ -117,12 +117,23 @@ public final class HeapWriter {
         assert key.length == this.keylength : "key.length == " + key.length + ", this.keylength = " + this.keylength; // after normalizing they should be equal in length
         assert this.index.get(key) < 0 : "index.get(key) = " + this.index.get(key) + ", index.size() = " + this.index.size() + ", file.length() = " + this.heapFileTMP.length() +  ", key = " + UTF8.String(key); // must not occur before
         if ((blob == null) || (blob.length == 0)) return;
-        this.index.putUnique(key, this.seek);
+        
+        // Warning check: Log when approaching or exceeding 2GB limit
+        // This should not happen in normal operation due to checks in ArrayStack.insert() and unmountBestMatch()
+        // But we allow it for rewriting legacy oversized BLOBs that need cleanup
         int chunkl = this.keylength + blob.length;
+        long newSeek = this.seek + chunkl + 4;
+        if (newSeek > Integer.MAX_VALUE) {
+            log.warn("HeapWriter: File " + this.heapFileREADY.getName() + " exceeding 2GB limit! Current: " + 
+                this.seek + ", adding: " + (chunkl + 4) + ", total: " + newSeek + 
+                ". This may indicate a merge of oversized BLOBs or insufficient shrinkReferences() cleanup.");
+        }
+        
+        this.index.putUnique(key, this.seek);
         this.os.writeInt(chunkl);
         this.os.write(key);
         this.os.write(blob);
-        this.seek += chunkl + 4;
+        this.seek = newSeek;
         //os.flush(); // necessary? may cause bad IO performance :-(
     }
 

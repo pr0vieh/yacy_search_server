@@ -437,15 +437,26 @@ public final class ReferenceContainerArray<ReferenceType extends Reference> {
     }
 
     public boolean shrinkUpToMaxSizeFiles(final IODispatcher merger, final long maxFileSize) {
-        final File[] ff = this.array.unmountBestMatch(2.0f, maxFileSize);
-        if (ff == null) {
-            final File oversized = this.array.unmountLargestAbove(maxFileSize);
-            if (oversized == null) return false;
-            ConcurrentLog.info("KELONDRO", "RICELL-shrink3: rewrite oversized BLOB " + oversized.getName() + " (> " + maxFileSize + ")");
-            merger.merge(oversized, null, this.factory, this.array, newContainerBLOBFile());
+        // Strategy: Only merge small files (< maxFileSize/2)
+        // Large files (>= maxFileSize/2) should only be rewritten with shrinkReferences(), not merged
+        final long targetFileSize = maxFileSize / 2;
+        
+        // First, check for files >= targetFileSize that need shrinking (not merging)
+        final File largeFile = this.array.unmountLargestAbove(targetFileSize);
+        if (largeFile != null) {
+            ConcurrentLog.info("KELONDRO", "RICELL-shrink3: rewrite large BLOB " + largeFile.getName() + 
+                " (" + (largeFile.length() / 1024 / 1024) + " MB) - no merge, only shrink");
+            merger.merge(largeFile, null, this.factory, this.array, newContainerBLOBFile());
             return true;
         }
-        ConcurrentLog.info("KELONDRO", "RICELL-shrink3: unmountBestMatch(2.0, " + maxFileSize + ")");
+        
+        // No large files found - try merging small files
+        final File[] ff = this.array.unmountBestMatch(2.0f, targetFileSize);
+        if (ff == null) return false;
+        
+        ConcurrentLog.info("KELONDRO", "RICELL-shrink3: merge small BLOBs " + ff[0].getName() + 
+            " (" + (ff[0].length() / 1024 / 1024) + " MB) + " + ff[1].getName() + 
+            " (" + (ff[1].length() / 1024 / 1024) + " MB)");
         merger.merge(ff[0], ff[1], this.factory, this.array, newContainerBLOBFile());
         return true;
     }
