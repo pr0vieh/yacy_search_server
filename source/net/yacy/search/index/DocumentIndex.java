@@ -85,8 +85,9 @@ public class DocumentIndex extends Segment {
                 webgraphConfigurationPath == null ? null : new WebgraphConfiguration(webgraphConfigurationPath, true)
         );
         this.timezoneOffset = timezoneOffset;
-        super.connectRWI(cachesize, targetFileSize * 4 - 1);
-        super.connectCitation(cachesize, targetFileSize * 4 - 1);
+        // Use targetFileSize * 2 as maxFileSize limit for better BLOB management
+        super.connectRWI(cachesize, targetFileSize * 2);
+        super.connectCitation(cachesize, targetFileSize * 2);
         super.fulltext().connectLocalSolr();
         super.fulltext().setUseWebgraph(true);
         this.callback = callback;

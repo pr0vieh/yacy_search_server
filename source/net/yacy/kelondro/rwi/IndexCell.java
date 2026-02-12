@@ -64,8 +64,8 @@ import net.yacy.search.Switchboard;
 
 public final class IndexCell<ReferenceType extends Reference> extends AbstractBufferedIndex<ReferenceType> implements BufferedIndex<ReferenceType>, Iterable<ReferenceContainer<ReferenceType>> {
 
-    private static final long cleanupCycle =  60000;
-    private static final long dumpCycle    = 300000;
+    private static final long cleanupCycle =  50000;
+    private static final long dumpCycle    = 240000;
 
     // class variables
     private final ReferenceContainerArray<ReferenceType> array;
@@ -187,6 +187,8 @@ public final class IndexCell<ReferenceType extends Reference> extends AbstractBu
         if (this.array.entries() < 2) return false;
         boolean donesomething = false;
 
+        // keep blobs small by merge thresholds only (no active splitting)
+
         // first try to merge small files that match
         int term = 10;
         while (term-- > 0 && (this.merger.queueLength() < 3 || this.array.entries() >= 50)) {
@@ -202,8 +204,9 @@ public final class IndexCell<ReferenceType extends Reference> extends AbstractBu
         }
 
         // if there is no small file, then merge matching files up to limit
-        term = 10;
-        while (term-- > 0 && (this.merger.queueLength() < 1)) {
+        // Always enforce maxFileSize limit, not just when queue is idle
+        term = 20;
+        while (term-- > 0) {
             if (!this.array.shrinkUpToMaxSizeFiles(this.merger, maxFileSize)) break;
             donesomething = true;
         }
