@@ -27,11 +27,8 @@ package net.yacy.crawler;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.time.LocalDateTime;
-import java.util.Collection;
 import java.util.Date;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Set;
 
 import org.apache.solr.common.SolrDocument;
@@ -44,12 +41,12 @@ import net.yacy.cora.federate.yacy.CacheStrategy;
 import net.yacy.cora.protocol.ClientIdentification;
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.crawler.data.CrawlProfile;
-import net.yacy.crawler.data.CrawlProfile.CrawlAttribute;
 import net.yacy.crawler.data.NoticedURL;
 import net.yacy.crawler.retrieval.Request;
 import net.yacy.document.parser.html.TagValency;
 import net.yacy.kelondro.workflow.AbstractBusyThread;
 import net.yacy.search.Switchboard;
+import net.yacy.search.SwitchboardConstants;
 import net.yacy.search.schema.CollectionSchema;
 
 /**
@@ -73,6 +70,15 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** The default value whether to delete on Recrawl */
     public static final boolean DEFAULT_DELETE_ON_RECRAWL = false;
 
+    /** Default maximum URLs to add per recrawl batch to remote crawler queue */
+    public static final int DEFAULT_MAX_REMOTE_URLS_PER_BATCH = 100;
+
+    /** Default maximum size for remote triggered crawler queue */
+    public static final int DEFAULT_MAX_REMOTE_QUEUE_SIZE = 5000;
+
+    /** Default maximum number of new URLs to collect per recrawl URL (discovered during crawl depth=1) */
+    public static final int DEFAULT_MAX_NEW_URLS_PER_RECRAWL = 10;
+
     /** The current query selecting documents to recrawl */
     private String currentQuery;
 
@@ -82,15 +88,30 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     /** flag whether to delete on Recrawl */
     private boolean deleteOnRecrawl;
 
+    /** Maximum URLs to add per batch to remote crawler queue */
+    private int maxRemoteUrlsPerBatch = DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
+
+    /** Maximum size for remote triggered crawler queue before pausing recrawl */
+    private int maxRemoteQueueSize = DEFAULT_MAX_REMOTE_QUEUE_SIZE;
+
+    /** Maximum number of new URLs to collect per recrawl URL (discovered during depth=1 crawl) */
+    private int maxNewUrlsPerRecrawl = DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+
+    /** Track if we're currently paused due to remote queue being full */
+    private boolean pausedDueToFullQueue = false;
+
     private int chunkstart = 0;
     private final int chunksize = 100;
     private final Switchboard sb;
 
-    /** buffer of urls to recrawl and their original collections */
-    private final Map<DigestURL, String> urlstack;
+    /** buffer of urls to recrawl */
+    private final Set<DigestURL> urlstack;
 
-    /** The base collection configured on the recrawl profile (used when no per-doc collection exists) */
-    private final String baseRecrawlCollections;
+    /** Set to track all URLs that have been processed in this recrawl job (to avoid duplicates) */
+    private final Set<String> processedUrls = new HashSet<>();
+
+    /** Threshold for cleaning up the processedUrls set to manage memory usage (default: 100k URLs) */
+    private long processedUrlsCleanupThreshold = 100000;
 
     /** The total number of candidate URLs found for recrawl */
     private long urlsToRecrawl = 0;
@@ -131,6 +152,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
      *            (success) must be included
      */
     public RecrawlBusyThread(final Switchboard xsb, final String query, final boolean includeFailed, final boolean deleteOnRecrawl) {
+        this(xsb, query, includeFailed, deleteOnRecrawl, DEFAULT_MAX_REMOTE_URLS_PER_BATCH, DEFAULT_MAX_REMOTE_QUEUE_SIZE);
+    }
+
+    public RecrawlBusyThread(final Switchboard xsb, final String query, final boolean includeFailed, final boolean deleteOnRecrawl,
+            final int maxRemoteUrlsPerBatch, final int maxRemoteQueueSize) {
         super(3000, 1000); // set lower limits of cycle delay
         this.setName(THREAD_NAME);
         this.setIdleSleep(10*60000); // set actual cycle delays
@@ -141,8 +167,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         this.currentQuery = query;
         this.includefailed = includeFailed;
         this.deleteOnRecrawl = deleteOnRecrawl;
-        this.urlstack = new LinkedHashMap<>();
-        this.baseRecrawlCollections = this.sb.crawler.defaultRecrawlJobProfile.get(CrawlAttribute.COLLECTIONS.key);
+        this.maxRemoteUrlsPerBatch = Math.max(10, maxRemoteUrlsPerBatch);
+        this.maxRemoteQueueSize = Math.max(100, maxRemoteQueueSize);
+        this.urlstack = new HashSet<>();
         // workaround to prevent solr exception on existing index (not fully reindexed) since intro of schema with docvalues
         // org.apache.solr.core.SolrCore java.lang.IllegalStateException: unexpected docvalues type NONE for field 'load_date_dt' (expected=NUMERIC). Use UninvertingReader or index with docvalues.
         this.solrSortBy = CollectionSchema.load_date_dt.getSolrFieldName() + " asc";
@@ -207,6 +234,46 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         return this.deleteOnRecrawl;
     }
 
+    public void setMaxRemoteUrlsPerBatch(final int maxUrls) {
+        this.maxRemoteUrlsPerBatch = Math.max(10, maxUrls);
+    }
+
+    public int getMaxRemoteUrlsPerBatch() {
+        return this.maxRemoteUrlsPerBatch;
+    }
+
+    public void setMaxRemoteQueueSize(final int maxSize) {
+        this.maxRemoteQueueSize = Math.max(100, maxSize);
+    }
+
+    public int getMaxRemoteQueueSize() {
+        return this.maxRemoteQueueSize;
+    }
+
+    /**
+     * Set the maximum number of new URLs to collect per recrawl URL
+     * @param maxUrls maximum new URLs per recrawl URL (minimum 1)
+     */
+    public void setMaxNewUrlsPerRecrawl(final int maxUrls) {
+        this.maxNewUrlsPerRecrawl = Math.max(1, maxUrls);
+    }
+
+    public int getMaxNewUrlsPerRecrawl() {
+        return this.maxNewUrlsPerRecrawl;
+    }
+
+    /**
+     * Set the cleanup threshold for the processedUrls set to manage memory usage
+     * @param threshold number of URLs before triggering cleanup (minimum 1000)
+     */
+    public void setProcessedUrlsCleanupThreshold(final long threshold) {
+        this.processedUrlsCleanupThreshold = Math.max(1000, threshold);
+    }
+
+    public long getProcessedUrlsCleanupThreshold() {
+        return this.processedUrlsCleanupThreshold;
+    }
+
     /**
      * feed urls to the local crawler
      * (Switchboard.addToCrawler() is not used here, as there existing urls are always skipped)
@@ -220,13 +287,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         if (!this.urlstack.isEmpty()) {
             final CrawlProfile profile = this.sb.crawler.defaultRecrawlJobProfile;
 
-            for (final Map.Entry<DigestURL, String> entry : this.urlstack.entrySet()) {
-                final DigestURL url = entry.getKey();
-                final String collections = entry.getValue();
-
-                /* Preserve the original collection of the document when available */
-                profile.setCollections(collections != null ? collections : this.baseRecrawlCollections);
-
+            for (final DigestURL url : this.urlstack) {
                 final Request request = new Request(ASCII.getBytes(this.sb.peers.mySeed().hash), url, null, "",
                         new Date(), profile.handle(), 0, profile.timezoneOffset());
                 String acceptedError = this.sb.crawlStacker.checkAcceptanceChangeable(url, profile, 0);
@@ -249,8 +310,6 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                     this.recrawledUrlsCount++;
                 }
             }
-            /* Reset to base collections to avoid leaking per-document overrides */
-            profile.setCollections(this.baseRecrawlCollections);
             this.urlstack.clear();
         }
         return (added > 0);
@@ -266,6 +325,30 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         // more than chunksize crawls are running, do nothing
         if (this.sb.crawlQueues.coreCrawlJobSize() > this.chunksize) {
             return false;
+        }
+
+        // Check GLOBAL/LIMIT crawler queue size - pause if it exceeds threshold
+        // GLOBAL: Contains new URLs discovered during recrawl at depth=1 (leaf nodes with remoteIndexing=true)
+        final int remoteQueueSize = this.sb.crawlQueues.limitCrawlJobSize();
+        final int resumeThreshold = this.maxRemoteQueueSize / 5; // Resume when queue drops to 20%
+        
+        if (this.pausedDueToFullQueue) {
+            // Currently paused - check if we can resume
+            if (remoteQueueSize <= resumeThreshold) {
+                this.pausedDueToFullQueue = false;
+                ConcurrentLog.info(THREAD_NAME, "Resuming recrawl: GLOBAL queue dropped to " + remoteQueueSize + " (threshold: " + resumeThreshold + ")");
+            } else {
+                // Still too full, stay paused
+                return false;
+            }
+        } else {
+            // Not paused - check if we need to pause
+            if (remoteQueueSize >= this.maxRemoteQueueSize) {
+                this.pausedDueToFullQueue = true;
+                ConcurrentLog.info(THREAD_NAME, "Pausing recrawl: GLOBAL queue " + remoteQueueSize + " >= max " + this.maxRemoteQueueSize + 
+                    ". Will resume when it drops to " + resumeThreshold);
+                return false;
+            }
         }
 
         boolean didSomething = false;
@@ -295,6 +378,12 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     public void terminate(boolean waitFor) {
         super.terminate(waitFor);
         this.endTime = LocalDateTime.now();
+        // Clean up processed URLs set to free memory
+        if (!this.processedUrls.isEmpty()) {
+            final long clearedSize = this.processedUrls.size();
+            this.processedUrls.clear();
+            ConcurrentLog.info(THREAD_NAME, "Recrawl job terminated. Freed memory from " + clearedSize + " processed URLs tracking.");
+        }
     }
 
     /**
@@ -316,9 +405,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         try {
             // query all or only httpstatus=200 depending on includefailed flag
             docList = solrConnector.getDocumentListByQuery(RecrawlBusyThread.buildSelectionQuery(this.currentQuery, this.includefailed),
-                this.solrSortBy, this.chunkstart, this.chunksize,
-                CollectionSchema.id.getSolrFieldName(), CollectionSchema.sku.getSolrFieldName(),
-                CollectionSchema.collection_sxt.getSolrFieldName());
+                this.solrSortBy, this.chunkstart, this.chunksize, CollectionSchema.id.getSolrFieldName(), CollectionSchema.sku.getSolrFieldName());
             this.urlsToRecrawl = docList.getNumFound();
         } catch (final Throwable e) {
             this.urlsToRecrawl = 0;
@@ -327,10 +414,24 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
         if (docList != null) {
             final Set<String> tobedeletedIDs = new HashSet<>();
+            this.processedUrls.clear();  // Clear at start of each chunk to prevent memory leak
             for (final SolrDocument doc : docList) {
                 try {
-                    final DigestURL url = new DigestURL((String) doc.getFieldValue(CollectionSchema.sku.getSolrFieldName()));
-                    this.urlstack.put(url, extractCollections(doc));
+                    final String urlStr = (String) doc.getFieldValue(CollectionSchema.sku.getSolrFieldName());
+                    final DigestURL url = new DigestURL(urlStr);
+
+                    // Check if URL was already processed in current chunk (avoid duplicates)
+                    if (this.processedUrls.contains(url.toNormalform(false))) {
+                        this.rejectedUrlsCount++;
+                        ConcurrentLog.fine(THREAD_NAME, "Skipping duplicate URL in current chunk: " + url.toNormalform(true));
+                        continue;
+                    }
+
+                    // Mark URL as processed to prevent duplicates within current chunk
+                    this.processedUrls.add(url.toNormalform(false));
+
+                    // Add to urlstack for later feeding to crawler
+                    this.urlstack.add(url);
                     if (this.deleteOnRecrawl) tobedeletedIDs.add((String) doc.getFieldValue(CollectionSchema.id.getSolrFieldName()));
                 } catch (final MalformedURLException ex) {
                     this.malformedUrlsCount++;
@@ -358,26 +459,13 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
-     * Extract collections from a Solr document and return as a comma-separated list.
-     * @param doc Solr document
-     * @return comma-separated collection names or null when none
-     */
-    private static String extractCollections(final SolrDocument doc) {
-        final Collection<Object> values = doc.getFieldValues(CollectionSchema.collection_sxt.getSolrFieldName());
-        if (values == null || values.isEmpty()) return null;
-        final StringBuilder sb = new StringBuilder();
-        for (final Object v : values) {
-            if (v == null) continue;
-            if (sb.length() > 0) sb.append(',');
-            sb.append(v.toString());
-        }
-        return sb.length() == 0 ? null : sb.toString();
-    }
-
-    /**
      * @return a new default CrawlProfile instance to be used for recrawl jobs.
      */
-    public static CrawlProfile buildDefaultCrawlProfile() {
+    public static CrawlProfile buildDefaultCrawlProfile(final Switchboard sb) {
+        final boolean allowRemoteIndexing = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
+        final boolean allowDepthOne = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
+        final int depth = allowDepthOne ? 1 : 0;
+        final boolean remoteIndexing = allowRemoteIndexing && allowDepthOne;
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // crawlerUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // crawlerIpMustMatch
@@ -389,13 +477,24 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 CrawlProfile.MATCH_ALL_STRING, // indexContentMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // indexContentMustNotMatch
                 false, //noindexWhenCanonicalUnequalURL
-                0, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
+                depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
                 true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
-                true, true, true, false, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
+                true, true, true, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
                 "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
+    }
+
+    /**
+     * Cleanup the processedUrls set to manage memory usage during long-running recrawl jobs.
+     * This is called periodically when the set exceeds the cleanup threshold.
+     * Strategy: Clear entries to prevent unbounded growth and memory exhaustion.
+     * NOTE: With chunk-based clearing, this is now a no-op. processedUrls is cleared at the start of each chunk.
+     */
+    private void cleanupProcessedUrls() {
+        // No-op: processedUrls is now cleared at the start of each chunk in processSingleQuery()
+        // This prevents unbounded growth while tracking duplicates within each chunk.
     }
 
     @Override

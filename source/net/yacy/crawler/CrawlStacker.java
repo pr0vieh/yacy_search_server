@@ -400,6 +400,12 @@ public final class CrawlStacker implements WorkflowTask<Request>{
             // it may be possible that global == true and local == true, so do not check an error case against it
             if (proxy) CrawlStacker.log.warn("URL '" + entry.url().toString() + "' has conflicting initiator properties: global = true, proxy = true, initiator = proxy" + ", profile.handle = " + profile.handle());
             if (remote) CrawlStacker.log.warn("URL '" + entry.url().toString() + "' has conflicting initiator properties: global = true, remote = true, initiator = " + ASCII.String(entry.initiator()) + ", profile.handle = " + profile.handle());
+            
+            // Check if URL already exists in any stack (LOCAL, GLOBAL/LIMIT, REMOTE, NOLOAD) to avoid filling queue with duplicates during recrawl
+            if (this.nextQueue.existsInAnyStack(entry.url().hash())) {
+                return "double in stacks (already being crawled or known)";
+            }
+            
             warning = this.nextQueue.noticeURL.push(NoticedURL.StackType.GLOBAL, entry, profile, this.robots);
         } else if (local) {
             if (proxy) CrawlStacker.log.warn("URL '" + entry.url().toString() + "' has conflicting initiator properties: local = true, proxy = true, initiator = proxy" + ", profile.handle = " + profile.handle());

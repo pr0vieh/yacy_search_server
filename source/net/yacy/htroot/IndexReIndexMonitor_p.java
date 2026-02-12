@@ -36,11 +36,13 @@ import net.yacy.cora.protocol.RequestHeader;
 import net.yacy.cora.sorting.OrderedScoreMap;
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.crawler.RecrawlBusyThread;
+import net.yacy.crawler.data.CrawlProfile;
 import net.yacy.data.TransactionManager;
 import net.yacy.data.WorkTables;
 import net.yacy.kelondro.blob.Tables.Row;
 import net.yacy.kelondro.workflow.BusyThread;
 import net.yacy.search.Switchboard;
+import net.yacy.search.SwitchboardConstants;
 import net.yacy.search.index.ReindexSolrBusyThread;
 import net.yacy.server.serverObjects;
 import net.yacy.server.serverSwitch;
@@ -126,6 +128,11 @@ public class IndexReIndexMonitor_p {
     	String recrawlQuery = RecrawlBusyThread.DEFAULT_QUERY;
         boolean inclerrdoc = RecrawlBusyThread.DEFAULT_INCLUDE_FAILED;
         boolean deleteOnRecrawl = RecrawlBusyThread.DEFAULT_DELETE_ON_RECRAWL;
+        int maxRemoteUrlsPerBatch = RecrawlBusyThread.DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
+        int maxRemoteQueueSize = RecrawlBusyThread.DEFAULT_MAX_REMOTE_QUEUE_SIZE;
+        int maxNewUrlsPerRecrawl = RecrawlBusyThread.DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+		boolean allowRemoteIndexing = sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
+		boolean allowDepthOne = sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
         // to signal that a setting shall change the form provides a fixed parameter setup=recrawljob, if not present return status only
         if (post != null && "recrawljob".equals(post.get("setup"))) { // it's a command to recrawlThread
 
@@ -144,12 +151,51 @@ public class IndexReIndexMonitor_p {
                 deleteOnRecrawl = post.getBoolean("deleteOnRecrawl");
             }
 
+            if (post.containsKey("maxRemoteUrlsPerBatch")) {
+                try {
+                    maxRemoteUrlsPerBatch = Integer.parseInt(post.get("maxRemoteUrlsPerBatch"));
+                } catch (final NumberFormatException e) {
+                    maxRemoteUrlsPerBatch = RecrawlBusyThread.DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
+                }
+            }
+
+            if (post.containsKey("maxRemoteQueueSize")) {
+                try {
+                    maxRemoteQueueSize = Integer.parseInt(post.get("maxRemoteQueueSize"));
+                } catch (final NumberFormatException e) {
+                    maxRemoteQueueSize = RecrawlBusyThread.DEFAULT_MAX_REMOTE_QUEUE_SIZE;
+                }
+            }
+
+            if (post.containsKey("maxNewUrlsPerRecrawl")) {
+                try {
+                    maxNewUrlsPerRecrawl = Integer.parseInt(post.get("maxNewUrlsPerRecrawl"));
+                } catch (final NumberFormatException e) {
+                    maxNewUrlsPerRecrawl = RecrawlBusyThread.DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
+                }
+            }
+
+			allowRemoteIndexing = post.containsKey("allowRemoteIndexing");
+			allowDepthOne = post.containsKey("allowDepthOne");
+
+			if (post.containsKey("recrawlDefaults")) {
+				allowRemoteIndexing = true;
+				allowDepthOne = true;
+			}
+
+			sb.setConfig(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, allowRemoteIndexing);
+			sb.setConfig(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, allowDepthOne);
+			refreshRecrawlDefaultProfile(sb);
+
             if (recrawlbt == null || recrawlbt.shutdownInProgress()) {
                 prop.put("recrawljobrunning_simulationResult", 0);
                 prop.put("recrawljobrunning_error", 0);
             	if (post.containsKey("recrawlnow")) {
+            		final RecrawlBusyThread thread = new RecrawlBusyThread(Switchboard.getSwitchboard(), recrawlQuery, inclerrdoc, deleteOnRecrawl, 
+            					maxRemoteUrlsPerBatch, maxRemoteQueueSize);
+            		thread.setMaxNewUrlsPerRecrawl(maxNewUrlsPerRecrawl);
             		sb.deployThread(RecrawlBusyThread.THREAD_NAME, "ReCrawl", "recrawl existing documents", null,
-            				new RecrawlBusyThread(Switchboard.getSwitchboard(), recrawlQuery, inclerrdoc, deleteOnRecrawl), 1000);
+            				thread, 1000);
             		recrawlbt = sb.getThread(RecrawlBusyThread.THREAD_NAME);
 
             		/* store this call as an api call for easy scheduling possibility */
@@ -212,6 +258,8 @@ public class IndexReIndexMonitor_p {
                 	recrawlQuery = RecrawlBusyThread.DEFAULT_QUERY;
                     inclerrdoc = RecrawlBusyThread.DEFAULT_INCLUDE_FAILED;
                     deleteOnRecrawl = RecrawlBusyThread.DEFAULT_DELETE_ON_RECRAWL;
+                    maxRemoteUrlsPerBatch = RecrawlBusyThread.DEFAULT_MAX_REMOTE_URLS_PER_BATCH;
+                    maxRemoteQueueSize = RecrawlBusyThread.DEFAULT_MAX_REMOTE_QUEUE_SIZE;
                 }
             } else {
                 if (post.containsKey("stoprecrawl")) {
@@ -254,11 +302,23 @@ public class IndexReIndexMonitor_p {
             prop.put("recrawljobrunning_recrawlquerytext", ((RecrawlBusyThread) recrawlbt).getQuery());
             prop.put("recrawljobrunning_includefailedurls", ((RecrawlBusyThread) recrawlbt).getIncludeFailed());
             prop.put("recrawljobrunning_deleteOnRecrawl", ((RecrawlBusyThread) recrawlbt).getDeleteOnRecrawl());
+            prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", ((RecrawlBusyThread) recrawlbt).getMaxRemoteUrlsPerBatch());
+            prop.put("recrawljobrunning_maxRemoteQueueSize", ((RecrawlBusyThread) recrawlbt).getMaxRemoteQueueSize());
+            prop.put("recrawljobrunning_maxNewUrlsPerRecrawl", ((RecrawlBusyThread) recrawlbt).getMaxNewUrlsPerRecrawl());
+            prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
+			prop.put("recrawljobrunning_allowRemoteIndexing", allowRemoteIndexing);
+			prop.put("recrawljobrunning_allowDepthOne", allowDepthOne);
         } else {
 			prop.put("recrawljobrunning", 0);
             prop.put("recrawljobrunning_recrawlquerytext", recrawlQuery);
             prop.put("recrawljobrunning_includefailedurls", inclerrdoc);
             prop.put("recrawljobrunning_deleteOnRecrawl", deleteOnRecrawl);
+            prop.put("recrawljobrunning_maxRemoteUrlsPerBatch", maxRemoteUrlsPerBatch);
+            prop.put("recrawljobrunning_maxNewUrlsPerRecrawl", maxNewUrlsPerRecrawl);
+            prop.put("recrawljobrunning_maxRemoteQueueSize", maxRemoteQueueSize);
+            prop.put("recrawljobrunning_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
+			prop.put("recrawljobrunning_allowRemoteIndexing", allowRemoteIndexing);
+			prop.put("recrawljobrunning_allowDepthOne", allowDepthOne);
         }
 
         // return rewrite properties
@@ -361,6 +421,9 @@ public class IndexReIndexMonitor_p {
 			prop.put("recrawlReport_rejectedUrlsCount", recrawlbt.getRejectedUrlsCount());
 			prop.put("recrawlReport_malformedUrlsCount", recrawlbt.getMalformedUrlsCount());
 			prop.put("recrawlReport_malformedUrlsDeletedCount", recrawlbt.getMalformedUrlsDeletedCount());
+			prop.put("recrawlReport_maxRemoteQueueSize", recrawlbt.getMaxRemoteQueueSize());
+			prop.put("recrawlReport_maxNewUrlsPerRecrawl", recrawlbt.getMaxNewUrlsPerRecrawl());
+			prop.put("recrawlReport_currentRemoteQueueSize", sb.crawlQueues.limitCrawlJobSize());
 		} else {
 			prop.put("recrawlReport", 0);
 		}
@@ -384,5 +447,15 @@ public class IndexReIndexMonitor_p {
 			formattedTime = "";
 		}
 		return formattedTime;
+	}
+
+	private static void refreshRecrawlDefaultProfile(final Switchboard sb) {
+		if (sb == null || sb.crawler == null) {
+			return;
+		}
+
+		final CrawlProfile profile = RecrawlBusyThread.buildDefaultCrawlProfile(sb);
+		sb.crawler.defaultRecrawlJobProfile = profile;
+		sb.crawler.putActive(UTF8.getBytes(profile.handle()), profile);
 	}
 }
