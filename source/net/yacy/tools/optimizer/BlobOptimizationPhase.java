@@ -48,7 +48,7 @@ public class BlobOptimizationPhase {
     private List<byte[]> readRecords(File file) throws IOException {
         List<byte[]> records = new ArrayList<>();
 
-        try (DataInputStream dis = new DataInputStream(new FileInputStream(file))) {
+        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(file), 4 * 1024 * 1024))) {
             long pos = 0;
             long size = file.length();
 
@@ -85,7 +85,7 @@ public class BlobOptimizationPhase {
     }
 
     private void writeRecords(File out, List<byte[]> records) throws IOException {
-        try (DataOutputStream dos = new DataOutputStream(new FileOutputStream(out))) {
+        try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 4 * 1024 * 1024))) {
             for (int i = 0; i < records.size(); i++) {
                 byte[] r = records.get(i);
                 dos.writeInt(r.length);

@@ -22,7 +22,7 @@ public class BlobMerger {
         long processed = 0;
 
         try (FileOutputStream out = new FileOutputStream(megaBlob)) {
-            byte[] buf = new byte[1048576]; // 1MB buffer
+            byte[] buf = new byte[4 * 1024 * 1024]; // 4MB buffer for faster I/O
 
             for (int i = 0; i < files.size(); i++) {
                 BlobScanner.BlobFileInfo bf = files.get(i);

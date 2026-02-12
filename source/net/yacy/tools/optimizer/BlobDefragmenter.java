@@ -36,7 +36,7 @@ public class BlobDefragmenter {
     private byte[] readAllBytes(File f) throws IOException {
         try (FileInputStream fis = new FileInputStream(f)) {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            byte[] buf = new byte[65536];
+            byte[] buf = new byte[4 * 1024 * 1024]; // 4MB buffer for faster I/O
             int n;
             while ((n = fis.read(buf)) > 0) {
                 baos.write(buf, 0, n);

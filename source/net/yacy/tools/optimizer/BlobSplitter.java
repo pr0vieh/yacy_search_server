@@ -21,25 +21,25 @@ public class BlobSplitter {
         long srcSize = defragBlob.length();
         List<File> outputs = new ArrayList<>();
 
-        try (FileInputStream fis = new FileInputStream(defragBlob)) {
-            byte[] buf = new byte[65536];
+        try (BufferedInputStream bis = new BufferedInputStream(new FileInputStream(defragBlob), 4 * 1024 * 1024)) {
+            byte[] buf = new byte[4 * 1024 * 1024]; // 4MB buffer for faster I/O
             int chunkNum = 0;
             long chunkSize = 0;
-            FileOutputStream fos = null;
+            BufferedOutputStream bos = null;
             long processed = 0;
 
             int n;
-            while ((n = fis.read(buf)) > 0) {
+            while ((n = bis.read(buf)) > 0) {
                 // Start new chunk if needed
-                if (fos == null || chunkSize + n > maxSize) {
-                    if (fos != null) {
-                        fos.close();
+                if (bos == null || chunkSize + n > maxSize) {
+                    if (bos != null) {
+                        bos.close();
                         chunkNum++;
                     }
                     
                     File chunk = new File(config.getOutputDir(), 
                         String.format("text.index%d.blob", chunkNum + 1));
-                    fos = new FileOutputStream(chunk);
+                    bos = new BufferedOutputStream(new FileOutputStream(chunk), 4 * 1024 * 1024);
                     outputs.add(chunk);
                     chunkSize = 0;
 
@@ -47,7 +47,7 @@ public class BlobSplitter {
                         String.format("Writing chunk %d", chunkNum + 1));
                 }
 
-                fos.write(buf, 0, n);
+                bos.write(buf, 0, n);
                 chunkSize += n;
                 processed += n;
 
@@ -57,8 +57,8 @@ public class BlobSplitter {
                 }
             }
 
-            if (fos != null) {
-                fos.close();
+            if (bos != null) {
+                bos.close();
             }
         }
 

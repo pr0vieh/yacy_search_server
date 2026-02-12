@@ -50,7 +50,7 @@ public class BlobValidator {
     private int countRecords(File blob) throws IOException {
         int count = 0;
 
-        try (DataInputStream dis = new DataInputStream(new FileInputStream(blob))) {
+        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(blob), 4 * 1024 * 1024))) {
             while (true) {
                 try {
                     int len = dis.readInt();
