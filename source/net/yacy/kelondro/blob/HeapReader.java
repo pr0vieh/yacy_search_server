@@ -133,10 +133,24 @@ public class HeapReader {
     }
 
     /**
-     * Optimize the index structure and dump to disk for later reload.
-     * Frees memory by removing the index from RAM.
+     * Optimize the index structure only - do NOT dump/unload.
+     * Used during runtime activities like merge, shrink, etc.
+     * Keeps index in memory for continued operation.
      */
     public void optimize() {
+        if (this.index == null) {
+            return; // Index already freed or not loaded
+        }
+        this.index.optimize();
+        // Note: Do NOT dump or unload here - index stays in memory for operations
+    }
+
+    /**
+     * Optimize the index structure AND dump to disk + unload from memory.
+     * Used only at startup to free RAM after initial load.
+     * Subsequent access will trigger lazy-load from dump.
+     */
+    public void optimizeWithDump() {
         if (this.index == null) {
             return; // Index already freed or not loaded
         }
@@ -238,13 +252,9 @@ public class HeapReader {
             return false;
         }
 
-        // check saturation
-        if (this.index instanceof RowHandleMap) {
-        int[] saturation = ((RowHandleMap) this.index).saturation(); // {<the maximum length of consecutive equal-beginning bytes in the key>, <the minimum number of leading zeros in the second column>}
-        log.info("HeapReader: saturation of " + this.fingerprintFileIdx.getName() + ": keylength = " + saturation[0] + ", vallength = " + saturation[1] + ", size = " + this.index.size() +
-                    ", maximum saving for index-compression = " + (saturation[0] * this.index.size() / 1024 / 1024) + " MB" +
-                    ", exact saving for value-compression = " + (saturation[1] * this.index.size() / 1024 / 1024) + " MB");
-        }
+        // Skip saturation check - it iterates over ALL entries and causes severe delays
+        // on large indexes (14M+ entries = minutes of blocking). Only useful for debugging.
+        // log.info("HeapReader: loaded index from " + this.fingerprintFileIdx.getName() + ", size = " + this.index.size());
 
         // read the gap file:
         try {

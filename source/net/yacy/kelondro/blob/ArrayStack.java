@@ -207,7 +207,12 @@ public class ArrayStack implements BLOB {
                            oneBlob = new Heap(f, keylength, ordering, buffersize);
                        } else {
                            oneBlob = new HeapModifier(f, keylength, ordering);
-                           oneBlob.optimize(); // no writings here, can be used with minimum memory
+                           if (oneBlob instanceof HeapReader) {
+                               // Startup optimization: dump and free index to save memory
+                               ((HeapReader)oneBlob).optimizeWithDump();
+                           } else {
+                               oneBlob.optimize(); // fallback for other BLOB types
+                           }
                        }
                        sortedItems.put(Long.valueOf(time), new blobItem(d, f, oneBlob));
                    } catch (final IOException e) {
