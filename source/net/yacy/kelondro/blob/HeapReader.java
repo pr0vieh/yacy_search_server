@@ -131,8 +131,60 @@ public class HeapReader {
         return this.index.mem(); // don't add the memory for free here since then the asserts for memory management don't work
     }
 
+    /**
+     * Optimize the index structure and dump to disk for later reload.
+     * Frees memory by removing the index from RAM.
+     */
     public void optimize() {
+        if (this.index == null) {
+            return; // Index already freed or not loaded
+        }
+
         this.index.optimize();
+
+        // Dump index and gap to files, then free memory
+        try {
+            String fingerprint = fingerprintFileHash(this.heapFile);
+            if (fingerprint != null) {
+                File idxFile = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
+                File gapFile = HeapWriter.fingerprintGapFile(this.heapFile, fingerprint);
+
+                // Dump index to file
+                this.index.dump(idxFile);
+                log.info("HeapReader: dumped index for " + this.heapFile.getName() + " to " + idxFile.getName());
+
+                // Dump gap to file
+                this.free.dump(gapFile);
+
+                // Free memory - index will be reloaded on demand
+                this.index.close();
+                this.index = null;
+                this.free = null;
+                log.info("HeapReader: freed index memory for " + this.heapFile.getName());
+            }
+        } catch (final IOException e) {
+            log.warn("HeapReader: could not dump index for " + this.heapFile.getName() + ": " + e.getMessage());
+            // Keep index in memory if dump fails
+        }
+    }
+
+    /**
+     * Ensure index is loaded. If it was freed by optimize(), reload from dump or regenerate from heap.
+     * @throws IOException if index cannot be loaded or regenerated
+     */
+    private synchronized void ensureIndexLoaded() throws IOException {
+        if (this.index != null) {
+            return; // Already loaded
+        }
+
+        log.info("HeapReader: reloading index for " + this.heapFile.getName());
+
+        // Try to load from dump first (fast)
+        if (!initIndexReadDump()) {
+            // Dump doesn't exist or is corrupt - regenerate from heap (slow)
+            log.warn("HeapReader: index dump not available, regenerating from " + this.heapFile.getName());
+            initIndexReadFromHeap();
+        }
     }
 
     protected byte[] normalizeKey(byte[] key) {
@@ -358,6 +410,12 @@ public class HeapReader {
      * @return the number of BLOBs in the heap
      */
     public int size() {
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.warn("HeapReader: could not load index in size() for " + this.heapFile.getName() + ": " + e.getMessage());
+            return 0;
+        }
         assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in size(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
@@ -367,6 +425,12 @@ public class HeapReader {
     }
 
     public boolean isEmpty() {
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.warn("HeapReader: could not load index in isEmpty() for " + this.heapFile.getName() + ": " + e.getMessage());
+            return true;
+        }
         assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in isEmpty(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
