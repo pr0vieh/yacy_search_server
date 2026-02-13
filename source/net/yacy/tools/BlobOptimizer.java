@@ -104,7 +104,17 @@ public class BlobOptimizer {
             printSummary(totalSize, finalSize, saved, savingPercent, duration, finalBlobs.size());
 
         } catch (Exception e) {
-            progress.error("Optimization failed: " + e.getMessage());
+            progress.error("Optimization failed!");
+            System.err.println();
+            System.err.println("Exception details:");
+            System.err.println("  " + e.getClass().getName() + ": " + e.getMessage());
+            if (e.getCause() != null) {
+                System.err.println("  Caused by: " + e.getCause().getMessage());
+            }
+            System.err.println();
+            System.err.println("Stack trace:");
+            e.printStackTrace(System.err);
+            System.err.println();
             throw e;
         }
     }

@@ -15,6 +15,8 @@ public class ProgressReporter {
     private double phaseProgress; // 0.0 to 1.0
     private String phaseDetails = "";
     private int progressBarWidth = 40;
+    private boolean progressBarActive = false;
+    private String lastProgressLine = "";
 
     public ProgressReporter() {
         this.totalStartTime = System.currentTimeMillis();
@@ -26,8 +28,10 @@ public class ProgressReporter {
         this.phaseStartTime = System.currentTimeMillis();
         this.phaseProgress = 0.0;
         this.phaseDetails = "";
+        clearProgressBar();
         
         System.out.println("\n[" + phase + "/5] " + title);
+        this.progressBarActive = false;
     }
 
     public void updateProgress(double progress, String details) {
@@ -44,6 +48,8 @@ public class ProgressReporter {
         this.phaseProgress = 1.0;
         this.phaseDetails = details != null ? details : "";
         printProgressBar();
+        clearProgressBar();
+        System.out.println("\n      ✓ " + this.phaseDetails);
     }
 
     private void printProgressBar() {
@@ -60,14 +66,41 @@ public class ProgressReporter {
             eta = " | " + formatDuration(elapsed);
         }
 
-        System.out.print("\r      ");
-        System.out.print(progressBar);
-        System.out.print(" " + String.format("%3d%%", percent));
-        System.out.print(eta);
+        StringBuilder line = new StringBuilder();
+        line.append("      ").append(progressBar);
+        line.append(" ").append(String.format("%3d%%", percent));
+        line.append(eta);
         if (!phaseDetails.isEmpty()) {
-            System.out.print("\n      " + phaseDetails + "\r");
+            line.append(" - ").append(phaseDetails);
         }
+        
+        // Clear line with spaces if shorter than last line
+        String currentLine = line.toString();
+        if (currentLine.length() < lastProgressLine.length()) {
+            int spacesToAdd = lastProgressLine.length() - currentLine.length();
+            for (int i = 0; i < spacesToAdd; i++) {
+                line.append(' ');
+            }
+        }
+        lastProgressLine = currentLine;
+        
+        System.out.print("\r" + line.toString());
         System.out.flush();
+        this.progressBarActive = true;
+    }
+    
+    private void clearProgressBar() {
+        if (this.progressBarActive) {
+            // Clear the progress bar line
+            System.out.print("\r");
+            for (int i = 0; i < lastProgressLine.length(); i++) {
+                System.out.print(' ');
+            }
+            System.out.print("\r");
+            System.out.flush();
+            this.progressBarActive = false;
+            this.lastProgressLine = "";
+        }
     }
 
     private String buildProgressBar() {
@@ -86,15 +119,18 @@ public class ProgressReporter {
     }
 
     public void info(String message) {
-        System.out.println("\n      ℹ " + message);
+        clearProgressBar();
+        System.out.println("      ℹ " + message);
     }
 
     public void error(String message) {
-        System.out.println("\n      ✗ ERROR: " + message);
+        clearProgressBar();
+        System.out.println("      ✗ ERROR: " + message);
     }
 
     public void success(String message) {
-        System.out.println("\n      ✓ " + message);
+        clearProgressBar();
+        System.out.println("      ✓ " + message);
     }
 
     private String formatDuration(long millis) {
