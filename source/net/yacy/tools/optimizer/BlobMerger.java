@@ -19,6 +19,13 @@ public class BlobMerger {
 
         File megaBlob = new File(config.getOutputDir(), "megablob.temp");
         long total = files.stream().mapToLong(f -> f.size).sum();
+
+        if (megaBlob.isFile() && megaBlob.length() == total) {
+            progress.info("Existing megablob.temp matches input size, skipping merge");
+            progress.completePhase("Merged to: " + megaBlob.getName());
+            return megaBlob;
+        }
+
         long processed = 0;
         long lastUpdate = 0;
         final long updateInterval = 10L * 1024 * 1024; // Update every 10 MB
