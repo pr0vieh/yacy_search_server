@@ -406,6 +406,18 @@ public class HeapReader {
 
         // finish the index generation
         try {
+            final long finalizeStart = System.currentTimeMillis();
+            log.info("HeapReader: finalizing index (sorting) for " + this.heapFile.getName());
+            while (!indexready.isDone()) {
+                try {
+                    Thread.sleep(30000);
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                long elapsed = System.currentTimeMillis() - finalizeStart;
+                log.info("HeapReader: finalizing index (sorting) for " + this.heapFile.getName() + " - elapsed " + formatDuration(elapsed));
+            }
             this.index = indexready.result();
         } catch (final InterruptedException e) {
         	ConcurrentLog.logException(e);

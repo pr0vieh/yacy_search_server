@@ -510,6 +510,10 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
             return this.result.get();
         }
 
+        public final boolean isDone() {
+            return this.result != null && this.result.isDone();
+        }
+
         @Override
         public final RowHandleMap call() throws IOException {
             try {
