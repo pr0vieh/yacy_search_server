@@ -62,6 +62,9 @@ public class BlobOptimizer {
                 return;
             }
 
+            // Check disk space before starting
+            checkDiskSpace(totalSize);
+
             // Phase 2: Merge BLOBs
             progress.startPhase(2, "Merging BLOBs...");
             BlobMerger merger = new BlobMerger(config, progress);
@@ -144,18 +147,62 @@ public class BlobOptimizer {
         System.out.println("  --output-dir DIR         (optional) Where to write optimized BLOBs (default: index-dir)");
     }
 
+    private void checkDiskSpace(long requiredSpace) throws IOException {
+        File outputDir = config.getOutputDir();
+        long freeSpace = outputDir.getUsableSpace();
+        
+        // Need: current size * 2 (working space) + 5% buffer
+        long neededSpace = (long) (requiredSpace * 2.05);
+        
+        System.out.println();
+        System.out.println("Disk Space Check:");
+        System.out.println("  Input size:     " + formatFileSize(requiredSpace));
+        System.out.println("  Required space: " + formatFileSize(neededSpace) + " (2x input + 5% buffer)");
+        System.out.println("  Available:      " + formatFileSize(freeSpace));
+        
+        if (freeSpace < neededSpace) {
+            long missing = neededSpace - freeSpace;
+            System.err.println();
+            System.err.println("✗ ERROR: Insufficient disk space!");
+            System.err.println("  Missing: " + formatFileSize(missing));
+            System.err.println("  Free up space on: " + outputDir.getAbsolutePath());
+            System.err.println();
+            throw new IOException("Insufficient disk space: need " + formatFileSize(neededSpace) + ", have " + formatFileSize(freeSpace));
+        }
+        
+        System.out.println("  Status:         ✓ OK (" + formatFileSize(freeSpace - neededSpace) + " buffer)");
+        System.out.println();
+    }
+
     private void printSummary(long original, long final_size, long saved, double savingPercent, long duration, int outputFiles) {
+        double compressionRatio = (double) original / final_size;
+        
         System.out.println();
-        System.out.println("SUMMARY:");
-        System.out.println("--------");
-        System.out.println("Original size:  " + formatFileSize(original));
-        System.out.println("Final size:     " + formatFileSize(final_size) + " (saved: " + formatFileSize(saved) + " / " + String.format("%.1f", savingPercent) + "%)");
-        System.out.println("Optimization:   " + String.format("%.1f", (saved / (double) original) * 100) + "%");
-        System.out.println("Time elapsed:   " + formatDuration(duration));
-        System.out.println("Output files:   " + outputFiles + " BLOBs");
-        System.out.println("Status:         ✓ READY (copy to your YaCy data directory)");
+        System.out.println("=".repeat(65));
+        System.out.println("  OPTIMIZATION SUMMARY");
+        System.out.println("=".repeat(65));
         System.out.println();
-        System.out.println("Output location: " + config.getOutputDir().getAbsolutePath());
+        System.out.println("  BEFORE:");
+        System.out.println("    Total size:        " + String.format("%15s", formatFileSize(original)));
+        System.out.println();
+        System.out.println("  AFTER:");
+        System.out.println("    Total size:        " + String.format("%15s", formatFileSize(final_size)));
+        System.out.println("    Output files:      " + String.format("%15d BLOBs", outputFiles));
+        System.out.println();
+        System.out.println("  SAVINGS:");
+        System.out.println("    Space freed:       " + String.format("%15s", formatFileSize(saved)));
+        System.out.println("    Reduction:         " + String.format("%14.1f%%", savingPercent));
+        System.out.println("    Compression ratio: " + String.format("%14.2f:1", compressionRatio));
+        System.out.println();
+        System.out.println("  PERFORMANCE:");
+        System.out.println("    Time elapsed:      " + String.format("%15s", formatDuration(duration)));
+        System.out.println("    Throughput:        " + String.format("%15s", formatFileSize(original / Math.max(1, duration)) + "/s"));
+        System.out.println();
+        System.out.println("  STATUS:            ✓ READY");
+        System.out.println();
+        System.out.println("  Output location: " + config.getOutputDir().getAbsolutePath());
+        System.out.println();
+        System.out.println("=".repeat(65));
         System.out.println();
     }
 
