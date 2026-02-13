@@ -165,11 +165,16 @@ public class HeapReader {
                 File gapFile = HeapWriter.fingerprintGapFile(this.heapFile, fingerprint);
 
                 // Dump index to file
+                long idxStart = System.currentTimeMillis();
+                log.info("HeapReader: dumping index for " + this.heapFile.getName() + " to " + idxFile.getName());
                 this.index.dump(idxFile);
-                log.info("HeapReader: dumped index for " + this.heapFile.getName() + " to " + idxFile.getName());
+                log.info("HeapReader: dumped index for " + this.heapFile.getName() + " to " + idxFile.getName() + " in " + (System.currentTimeMillis() - idxStart) + " ms (" + (idxFile.length() / 1024 / 1024) + " MB)");
 
                 // Dump gap to file
+                long gapStart = System.currentTimeMillis();
+                log.info("HeapReader: dumping gaps for " + this.heapFile.getName() + " to " + gapFile.getName());
                 this.free.dump(gapFile);
+                log.info("HeapReader: dumped gaps for " + this.heapFile.getName() + " to " + gapFile.getName() + " in " + (System.currentTimeMillis() - gapStart) + " ms (" + (gapFile.length() / 1024 / 1024) + " MB)");
 
                 // Free memory - index will be reloaded on demand
                 this.index.close();
