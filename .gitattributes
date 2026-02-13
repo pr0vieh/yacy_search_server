@@ -1,0 +1,9 @@
+# Ensure shell scripts always use LF line endings (Unix)
+*.sh text eol=lf
+
+# Windows batch files should use CRLF
+*.bat text eol=crlf
+
+# Ensure optimize scripts have correct line endings
+bin/optimize.sh text eol=lf
+optimize.sh text eol=lf
