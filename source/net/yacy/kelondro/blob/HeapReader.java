@@ -312,7 +312,8 @@ public class HeapReader {
 
     private void initIndexReadFromHeap() throws IOException {
         // this initializes the this.index object by reading positions from the heap file
-        log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (this.file.length() / 1024 / 1024) + " MB. Please wait.");
+        final long totalBytes = this.file.length();
+        log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (totalBytes / 1024 / 1024) + " MB. Please wait.");
 
         this.free = new Gap();
         RowHandleMap.initDataConsumer indexready = RowHandleMap.asynchronusInitializer(this.name() + ".initializer", this.keylength, this.ordering, 8, Math.max(10, (int) (Runtime.getRuntime().freeMemory() / (10 * 1024 * 1024))));
@@ -327,6 +328,10 @@ public class HeapReader {
         try {
             long seek = 0;
             int reclen;
+            long records = 0;
+            long startTime = System.currentTimeMillis();
+            long lastLogTime = startTime;
+            long lastLogSeek = 0;
             
             while (true) {
                 try {
@@ -375,6 +380,18 @@ public class HeapReader {
                     
                     // new seek position
                     seek += 4L + reclen;
+                    records++;
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastLogTime >= 60000 || seek - lastLogSeek >= (512L * 1024 * 1024)) {
+                        double pct = totalBytes > 0 ? (100.0 * seek / totalBytes) : 0.0;
+                        double elapsedSec = (now - startTime) / 1000.0;
+                        double mbPerSec = elapsedSec > 0 ? (seek / 1024.0 / 1024.0) / elapsedSec : 0.0;
+                        long etaMillis = (seek > 0 && totalBytes > 0) ? (long) ((totalBytes - seek) / (seek / (double) (now - startTime))) : 0;
+                        log.info("HeapReader: indexing " + this.heapFile.getName() + " " + String.format("%.1f", pct) + "% (" + (seek / 1024 / 1024) + "/" + (totalBytes / 1024 / 1024) + " MB), " + records + " records, " + String.format("%.1f", mbPerSec) + " MB/s, ETA " + formatDuration(etaMillis));
+                        lastLogTime = now;
+                        lastLogSeek = seek;
+                    }
                     
                 } catch (final EOFException e) {
                     // EOF reached
@@ -396,6 +413,20 @@ public class HeapReader {
         	ConcurrentLog.logException(e);
         }
         log.info("HeapReader: finished index generation for " + this.heapFile.toString() + ", " + this.index.size() + " entries, " + this.free.size() + " gaps.");
+    }
+
+    private static String formatDuration(long millis) {
+        if (millis <= 0) return "0s";
+        long seconds = millis / 1000;
+        long minutes = seconds / 60;
+        long hours = minutes / 60;
+        if (hours > 0) {
+            return hours + "h " + (minutes % 60) + "m";
+        }
+        if (minutes > 0) {
+            return minutes + "m " + (seconds % 60) + "s";
+        }
+        return seconds + "s";
     }
 
     private void mergeFreeEntries() throws IOException {
