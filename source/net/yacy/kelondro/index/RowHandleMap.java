@@ -221,6 +221,10 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         final File tmp = new File(file.getParentFile(), file.getName() + ".prt");
         final Iterator<Row.Entry> i = this.index.rows(true, null);
     	int c = 0;
+        final int total = this.size();
+        long bytesWritten = 0;
+        long lastLogTime = System.currentTimeMillis();
+        long startTime = lastLogTime;
     	final FileOutputStream fileStream = new FileOutputStream(tmp);
     	OutputStream os = null;
         try {
@@ -231,8 +235,20 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	}
         	if (file.getName().endsWith(".gz")) os = new GZIPOutputStream(os, 65536){{def.setLevel(Deflater.BEST_COMPRESSION);}};
         	while (i.hasNext()) {
-        		os.write(i.next().bytes());
-        		c++;
+			Row.Entry entry = i.next();
+            byte[] data = entry.bytes();
+			os.write(data);
+			c++;
+            bytesWritten += data.length;
+
+            long now = System.currentTimeMillis();
+            if (now - lastLogTime >= 30000) {
+                double pct = total > 0 ? (100.0 * c / total) : 0.0;
+                double elapsedSec = (now - startTime) / 1000.0;
+                double mbPerSec = elapsedSec > 0 ? (bytesWritten / 1024.0 / 1024.0) / elapsedSec : 0.0;
+                ConcurrentLog.info("RowHandleMap", "dumping " + file.getName() + " " + String.format("%.1f", pct) + "% (" + c + "/" + total + "), " + String.format("%.1f", mbPerSec) + " MB/s");
+                lastLogTime = now;
+            }
         	}
         	os.flush();
         } finally {

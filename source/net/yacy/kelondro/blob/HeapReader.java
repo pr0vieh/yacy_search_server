@@ -337,6 +337,9 @@ public class HeapReader {
             long startTime = System.currentTimeMillis();
             long lastLogTime = startTime;
             long lastLogSeek = 0;
+            final boolean inplace = Boolean.getBoolean("yacy.index.progress.inplace");
+            long lastConsoleTime = startTime;
+            String lastConsoleLine = "";
             
             while (true) {
                 try {
@@ -397,6 +400,22 @@ public class HeapReader {
                         lastLogTime = now;
                         lastLogSeek = seek;
                     }
+
+                    if (inplace && now - lastConsoleTime >= 1000) {
+                        double pct = totalBytes > 0 ? (100.0 * seek / totalBytes) : 0.0;
+                        String line = "HeapReader: indexing " + this.heapFile.getName() + " " + String.format("%.1f", pct) + "% (" + (seek / 1024 / 1024) + "/" + (totalBytes / 1024 / 1024) + " MB), " + records + " records";
+                        if (line.length() < lastConsoleLine.length()) {
+                            StringBuilder pad = new StringBuilder(line);
+                            for (int i = line.length(); i < lastConsoleLine.length(); i++) {
+                                pad.append(' ');
+                            }
+                            line = pad.toString();
+                        }
+                        System.out.print("\r" + line);
+                        System.out.flush();
+                        lastConsoleLine = line;
+                        lastConsoleTime = now;
+                    }
                     
                 } catch (final EOFException e) {
                     // EOF reached
@@ -405,6 +424,10 @@ public class HeapReader {
             }
         } finally {
             dis.close(); // closes the BufferedInputStream and FileInputStream
+            if (Boolean.getBoolean("yacy.index.progress.inplace")) {
+                System.out.print("\n");
+                System.out.flush();
+            }
         }
         
         indexready.finish();
