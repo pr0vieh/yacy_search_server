@@ -213,9 +213,7 @@ public class BlobOptimizationPhase {
         long maxMemory = Runtime.getRuntime().maxMemory();
         long target = (long) (maxMemory * 0.30);
         long min = 64L * 1024 * 1024;
-        long max = 512L * 1024 * 1024;
         if (target < min) target = min;
-        if (target > max) target = max;
         return target;
     }
 
