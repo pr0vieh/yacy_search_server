@@ -14,67 +14,65 @@ public class BlobOptimizationPhase {
         this.progress = progress;
     }
 
-    public File optimizeBlob(File mergedBlob) throws IOException {
-        progress.startPhase(3, "Optimize & Deduplicate");
-
-        File optimized = new File(config.getOutputDir(), "megablob.optimized");
+    public List<File> optimizeBlobs(List<BlobScanner.BlobFileInfo> files) throws IOException {
         File tempDir = new File(config.getOutputDir(), "optimize_tmp");
         if (!tempDir.exists() && !tempDir.mkdirs()) {
             throw new IOException("Cannot create temp dir: " + tempDir.getAbsolutePath());
         }
 
-        List<File> chunks = writeSortedChunks(mergedBlob, tempDir);
+        List<File> chunks = writeSortedChunks(files, tempDir);
         if (chunks.isEmpty()) {
-            try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(optimized), 4 * 1024 * 1024))) {
-                // write empty optimized blob
-            }
-            progress.completePhase("Optimized: 0 records");
-            return optimized;
+            return java.util.Collections.emptyList();
         }
 
-        int recordsWritten = mergeChunks(chunks, optimized);
+        MergeResult result = mergeChunksToSplit(chunks);
         cleanupChunks(chunks, tempDir);
 
-        progress.completePhase(String.format("Optimized: %,d records", recordsWritten));
-        return optimized;
+        progress.completePhase(String.format("Optimized: %,d records into %,d blobs", result.recordsWritten, result.outputs.size()));
+        return result.outputs;
     }
 
-    private List<File> writeSortedChunks(File file, File tempDir) throws IOException {
+    private List<File> writeSortedChunks(List<BlobScanner.BlobFileInfo> files, File tempDir) throws IOException {
         List<File> chunks = new ArrayList<>();
         List<byte[]> records = new ArrayList<>();
         long bytesInChunk = 0;
-        long totalBytes = file.length();
+        long totalBytes = files.stream().mapToLong(f -> f.size).sum();
         long processedBytes = 0;
         long lastUpdate = 0;
         final long updateInterval = 10L * 1024 * 1024; // Update every 10 MB
         final long chunkTargetBytes = getChunkTargetBytes();
 
-        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(file), 4 * 1024 * 1024))) {
-            while (processedBytes < totalBytes - 4) {
-                try {
-                    int len = dis.readInt();
-                    if (len <= 0 || len > 10_000_000) break;
+        for (BlobScanner.BlobFileInfo bf : files) {
+            try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(bf.file), 4 * 1024 * 1024))) {
+                long localBytes = 0;
+                while (localBytes < bf.size - 4) {
+                    try {
+                        int len = dis.readInt();
+                        if (len <= 0 || len > 10_000_000) break;
 
-                    byte[] data = new byte[len];
-                    dis.readFully(data);
-                    records.add(data);
-                    bytesInChunk += 4L + len;
-                    processedBytes += 4L + len;
+                        byte[] data = new byte[len];
+                        dis.readFully(data);
+                        records.add(data);
+                        bytesInChunk += 4L + len;
+                        processedBytes += 4L + len;
+                        localBytes += 4L + len;
 
-                    if (processedBytes - lastUpdate >= updateInterval) {
-                        double pct = 0.1 + 0.4 * processedBytes / totalBytes;
-                        progress.updateProgress(pct, String.format("Chunking: %s / %s", formatBytes(processedBytes), formatBytes(totalBytes)));
-                        lastUpdate = processedBytes;
+                        if (processedBytes - lastUpdate >= updateInterval) {
+                            double pct = 0.1 + 0.4 * processedBytes / totalBytes;
+                            progress.updateProgress(pct, String.format("Chunking: %s / %s (%s)",
+                                formatBytes(processedBytes), formatBytes(totalBytes), bf.file.getName()));
+                            lastUpdate = processedBytes;
+                        }
+
+                        if (bytesInChunk >= chunkTargetBytes) {
+                            File chunk = writeChunk(records, tempDir, chunks.size());
+                            chunks.add(chunk);
+                            records.clear();
+                            bytesInChunk = 0;
+                        }
+                    } catch (EOFException e) {
+                        break;
                     }
-
-                    if (bytesInChunk >= chunkTargetBytes) {
-                        File chunk = writeChunk(records, tempDir, chunks.size());
-                        chunks.add(chunk);
-                        records.clear();
-                        bytesInChunk = 0;
-                    }
-                } catch (EOFException e) {
-                    break;
                 }
             }
         }
@@ -108,13 +106,19 @@ public class BlobOptimizationPhase {
         return chunk;
     }
 
-    private int mergeChunks(List<File> chunks, File out) throws IOException {
+    private MergeResult mergeChunksToSplit(List<File> chunks) throws IOException {
         List<DataInputStream> inputs = new ArrayList<>();
         PriorityQueue<ChunkRecord> pq = new PriorityQueue<>(Comparator.comparingInt(a -> a.hash));
         long totalBytes = 0;
         for (File f : chunks) {
             totalBytes += f.length();
         }
+
+        List<File> outputs = new ArrayList<>();
+        DataOutputStream dos = null;
+        long currentSize = 0;
+        int outputIndex = 0;
+        long maxFileSize = config.getMaxFileSize();
 
         try {
             for (int i = 0; i < chunks.size(); i++) {
@@ -133,37 +137,58 @@ public class BlobOptimizationPhase {
             boolean hasLast = false;
             int lastHash = 0;
 
-            try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 4 * 1024 * 1024))) {
-                while (!pq.isEmpty()) {
-                    ChunkRecord rec = pq.poll();
+            while (!pq.isEmpty()) {
+                ChunkRecord rec = pq.poll();
 
-                    if (!hasLast || rec.hash != lastHash) {
-                        dos.writeInt(rec.data.length);
-                        dos.write(rec.data);
-                        recordsWritten++;
-                        lastHash = rec.hash;
-                        hasLast = true;
+                if (!hasLast || rec.hash != lastHash) {
+                    long recSize = 4L + rec.data.length;
+                    if (dos == null || (currentSize + recSize > maxFileSize && hasLast)) {
+                        if (dos != null) {
+                            dos.close();
+                        }
+                        outputIndex++;
+                        File out = new File(config.getOutputDir(), String.format("text.index%d.blob", outputIndex));
+                        dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 4 * 1024 * 1024));
+                        outputs.add(out);
+                        currentSize = 0;
                     }
 
-                    processedBytes += 4L + rec.data.length;
-                    if (processedBytes - lastUpdate >= updateInterval && totalBytes > 0) {
-                        double pct = 0.6 + 0.3 * processedBytes / totalBytes;
-                        progress.updateProgress(pct, String.format("Merging chunks: %s / %s", formatBytes(processedBytes), formatBytes(totalBytes)));
-                        lastUpdate = processedBytes;
-                    }
+                    dos.writeInt(rec.data.length);
+                    dos.write(rec.data);
+                    recordsWritten++;
+                    currentSize += recSize;
+                    lastHash = rec.hash;
+                    hasLast = true;
+                }
 
-                    byte[] next = readNextRecord(inputs.get(rec.sourceIndex));
-                    if (next != null) {
-                        pq.add(new ChunkRecord(hashCode(next), next, rec.sourceIndex));
-                    }
+                processedBytes += 4L + rec.data.length;
+                if (processedBytes - lastUpdate >= updateInterval && totalBytes > 0) {
+                    double pct = 0.6 + 0.3 * processedBytes / totalBytes;
+                    progress.updateProgress(pct, String.format("Merging chunks: %s / %s", formatBytes(processedBytes), formatBytes(totalBytes)));
+                    lastUpdate = processedBytes;
+                }
+
+                byte[] next = readNextRecord(inputs.get(rec.sourceIndex));
+                if (next != null) {
+                    pq.add(new ChunkRecord(hashCode(next), next, rec.sourceIndex));
                 }
             }
 
-            return recordsWritten;
+            if (dos != null) {
+                dos.close();
+            }
+
+            return new MergeResult(outputs, recordsWritten);
         } finally {
             for (DataInputStream dis : inputs) {
                 try {
                     dis.close();
+                } catch (IOException ignored) {
+                }
+            }
+            if (dos != null) {
+                try {
+                    dos.close();
                 } catch (IOException ignored) {
                 }
             }
@@ -226,6 +251,16 @@ public class BlobOptimizationPhase {
             this.hash = hash;
             this.data = data;
             this.sourceIndex = sourceIndex;
+        }
+    }
+
+    private static class MergeResult {
+        final List<File> outputs;
+        final int recordsWritten;
+
+        MergeResult(List<File> outputs, int recordsWritten) {
+            this.outputs = outputs;
+            this.recordsWritten = recordsWritten;
         }
     }
 

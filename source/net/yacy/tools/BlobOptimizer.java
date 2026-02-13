@@ -65,29 +65,14 @@ public class BlobOptimizer {
             // Check disk space before starting
             checkDiskSpace(totalSize);
 
-            // Phase 2: Merge BLOBs
-            progress.startPhase(2, "Merging BLOBs...");
-            BlobMerger merger = new BlobMerger(config, progress);
-            File mergedBlob = merger.mergeBlobs(blobFiles);
-            progress.completePhase("Merged into: " + mergedBlob.getName());
-
-            // Phase 3: Optimize & Sort (shrinkReferences + sort)
-            progress.startPhase(3, "Optimizing & Sorting...");
+            // Phase 2: Optimize & Deduplicate (chunked, disk-backed)
+            progress.startPhase(2, "Optimize & Deduplicate (chunked)...");
             BlobOptimizationPhase optimizer = new BlobOptimizationPhase(config, progress);
-            File optimizedBlob = optimizer.optimizeBlob(mergedBlob);
-            progress.completePhase("Optimized blob created");
+            java.util.List<File> finalBlobs = optimizer.optimizeBlobs(blobFiles);
+            progress.completePhase("Optimized blobs created");
 
-            // Phase 4: Defragmentation
-            progress.startPhase(4, "Defragmentation...");
-            BlobDefragmenter defragmenter = new BlobDefragmenter(config, progress);
-            File defragmentedBlob = defragmenter.defragment(optimizedBlob);
-            progress.completePhase("Defragmentation complete");
-
-            // Phase 5: Splitting & Validation
-            progress.startPhase(5, "Splitting & Validation...");
-            BlobSplitter splitter = new BlobSplitter(config, progress);
-            java.util.List<File> finalBlobs = splitter.splitBlob(defragmentedBlob);
-            
+            // Phase 3: Validation
+            progress.startPhase(3, "Validate BLOB Files...");
             BlobValidator validator = new BlobValidator(config, progress);
             boolean valid = validator.validateBlobs(finalBlobs);
             
