@@ -262,9 +262,29 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         		}
         	}
         }
-        tmp.renameTo(file);
-        assert file.exists() : file.toString();
-        assert !tmp.exists() : tmp.toString();
+        
+        // Verify temp file exists and rename to final destination
+        if (!tmp.exists()) {
+            throw new IOException("RowHandleMap.dump(): temporary file was not created: " + tmp.getAbsolutePath());
+        }
+        long tmpSize = tmp.length();
+        
+        // If final file exists, delete it first
+        if (file.exists() && !file.delete()) {
+            throw new IOException("RowHandleMap.dump(): could not delete existing file: " + file.getAbsolutePath());
+        }
+        
+        // Rename temp file to final destination
+        if (!tmp.renameTo(file)) {
+            throw new IOException("RowHandleMap.dump(): could not rename temp file " + tmp.getAbsolutePath() + " to " + file.getAbsolutePath());
+        }
+        
+        // Verify final file exists
+        if (!file.exists()) {
+            throw new IOException("RowHandleMap.dump(): final file does not exist after rename: " + file.getAbsolutePath());
+        }
+        
+        ConcurrentLog.info("RowHandleMap", "finished dumping " + file.getName() + ", " + c + " entries, " + (tmpSize / 1024 / 1024) + " MB");
         return c;
     }
 

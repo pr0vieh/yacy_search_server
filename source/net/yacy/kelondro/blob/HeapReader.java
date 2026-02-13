@@ -155,10 +155,14 @@ public class HeapReader {
             return; // Index already freed or not loaded
         }
 
-        this.index.optimize();
-
-        // Dump index and gap to files, then free memory
         try {
+            // Step 1: Optimize index structure
+            log.info("HeapReader: optimizing index structure for " + this.heapFile.getName());
+            long optimizeStart = System.currentTimeMillis();
+            this.index.optimize();
+            log.info("HeapReader: optimized index structure in " + (System.currentTimeMillis() - optimizeStart) + " ms");
+
+            // Step 2: Dump index and gap to files, then free memory
             String fingerprint = fingerprintFileHash(this.heapFile);
             if (fingerprint != null) {
                 File idxFile = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
@@ -166,24 +170,43 @@ public class HeapReader {
 
                 // Dump index to file
                 long idxStart = System.currentTimeMillis();
-                log.info("HeapReader: dumping index for " + this.heapFile.getName() + " to " + idxFile.getName());
-                this.index.dump(idxFile);
-                log.info("HeapReader: dumped index for " + this.heapFile.getName() + " to " + idxFile.getName() + " in " + (System.currentTimeMillis() - idxStart) + " ms (" + (idxFile.length() / 1024 / 1024) + " MB)");
+                log.info("HeapReader: starting dump of index for " + this.heapFile.getName() + " (" + this.index.size() + " entries) to " + idxFile.getName());
+                int idxCount = this.index.dump(idxFile);
+                long idxDuration = System.currentTimeMillis() - idxStart;
+                if (!idxFile.exists()) {
+                    log.warn("HeapReader: ERROR - index file was not created: " + idxFile.getAbsolutePath());
+                } else {
+                    long idxSize = idxFile.length() / 1024 / 1024;
+                    log.info("HeapReader: dumped " + idxCount + " index entries in " + idxDuration + " ms (" + idxSize + " MB)");
+                }
 
                 // Dump gap to file
                 long gapStart = System.currentTimeMillis();
-                log.info("HeapReader: dumping gaps for " + this.heapFile.getName() + " to " + gapFile.getName());
+                log.info("HeapReader: starting dump of gaps for " + this.heapFile.getName() + " to " + gapFile.getName());
                 this.free.dump(gapFile);
-                log.info("HeapReader: dumped gaps for " + this.heapFile.getName() + " to " + gapFile.getName() + " in " + (System.currentTimeMillis() - gapStart) + " ms (" + (gapFile.length() / 1024 / 1024) + " MB)");
+                long gapDuration = System.currentTimeMillis() - gapStart;
+                if (!gapFile.exists()) {
+                    log.warn("HeapReader: ERROR - gap file was not created: " + gapFile.getAbsolutePath());
+                } else {
+                    long gapSize = gapFile.length() / 1024 / 1024;
+                    log.info("HeapReader: dumped gap file in " + gapDuration + " ms (" + gapSize + " MB)");
+                }
 
                 // Free memory - index will be reloaded on demand
                 this.index.close();
                 this.index = null;
                 this.free = null;
                 log.info("HeapReader: freed index memory for " + this.heapFile.getName());
+            } else {
+                log.warn("HeapReader: could not calculate fingerprint for " + this.heapFile.getName());
             }
         } catch (final IOException e) {
-            log.warn("HeapReader: could not dump index for " + this.heapFile.getName() + ": " + e.getMessage());
+            log.warn("HeapReader: IOException while dumping index for " + this.heapFile.getName() + ": " + e.getMessage());
+            ConcurrentLog.logException(e);
+            // Keep index in memory if dump fails
+        } catch (final Exception e) {
+            log.warn("HeapReader: unexpected exception while dumping index for " + this.heapFile.getName() + ": " + e.getMessage());
+            ConcurrentLog.logException(e);
             // Keep index in memory if dump fails
         }
     }
