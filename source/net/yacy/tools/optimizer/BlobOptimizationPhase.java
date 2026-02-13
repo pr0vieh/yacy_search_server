@@ -20,6 +20,11 @@ public class BlobOptimizationPhase {
             throw new IOException("Cannot create temp dir: " + tempDir.getAbsolutePath());
         }
 
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        long chunkTargetBytes = getChunkTargetBytes();
+        progress.info(String.format("Chunk target size: %s (30%% of max heap %s, min 64 MB)",
+            formatBytes(chunkTargetBytes), formatBytes(maxMemory)));
+
         List<File> chunks = writeSortedChunks(files, tempDir);
         if (chunks.isEmpty()) {
             return java.util.Collections.emptyList();
