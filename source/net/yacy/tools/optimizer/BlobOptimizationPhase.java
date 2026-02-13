@@ -2,12 +2,15 @@ package net.yacy.tools.optimizer;
 
 import java.io.*;
 import java.util.*;
+import net.yacy.cora.date.GenericFormatter;
 
 /** Optimizes merged BLOB by applying shrinkReferences and sorting */
 public class BlobOptimizationPhase {
 
     private final OptimizerConfig config;
     private final ProgressReporter progress;
+    private long outputTimeBase = 0;
+    private int outputCounter = 0;
 
     public BlobOptimizationPhase(OptimizerConfig config, ProgressReporter progress) {
         this.config = config;
@@ -25,12 +28,13 @@ public class BlobOptimizationPhase {
         progress.info(String.format("Chunk target size: %s (30%% of max heap %s, min 64 MB)",
             formatBytes(chunkTargetBytes), formatBytes(maxMemory)));
 
+        String blobPrefix = getBlobPrefix(files);
         List<File> chunks = writeSortedChunks(files, tempDir);
         if (chunks.isEmpty()) {
             return java.util.Collections.emptyList();
         }
 
-        MergeResult result = mergeChunksToSplit(chunks);
+        MergeResult result = mergeChunksToSplit(chunks, blobPrefix);
         cleanupChunks(chunks, tempDir);
 
         progress.completePhase(String.format("Optimized: %,d records into %,d blobs", result.recordsWritten, result.outputs.size()));
@@ -111,7 +115,7 @@ public class BlobOptimizationPhase {
         return chunk;
     }
 
-    private MergeResult mergeChunksToSplit(List<File> chunks) throws IOException {
+    private MergeResult mergeChunksToSplit(List<File> chunks, String blobPrefix) throws IOException {
         List<DataInputStream> inputs = new ArrayList<>();
         PriorityQueue<ChunkRecord> pq = new PriorityQueue<>(Comparator.comparingInt(a -> a.hash));
         long totalBytes = 0;
@@ -152,7 +156,7 @@ public class BlobOptimizationPhase {
                             dos.close();
                         }
                         outputIndex++;
-                        File out = new File(config.getOutputDir(), String.format("text.index%d.blob", outputIndex));
+                        File out = nextOutputFile(blobPrefix);
                         dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 4 * 1024 * 1024));
                         outputs.add(out);
                         currentSize = 0;
@@ -220,6 +224,54 @@ public class BlobOptimizationPhase {
         long min = 64L * 1024 * 1024;
         if (target < min) target = min;
         return target;
+    }
+
+    private File nextOutputFile(String prefix) {
+        if (outputTimeBase == 0) {
+            outputTimeBase = System.currentTimeMillis();
+        }
+        long ts = outputTimeBase + outputCounter;
+        outputCounter++;
+        String name = prefix + "." + GenericFormatter.SHORT_MILSEC_FORMATTER.format(new Date(ts)) + ".blob";
+        return new File(config.getOutputDir(), name);
+    }
+
+    private String getBlobPrefix(List<BlobScanner.BlobFileInfo> files) {
+        String pattern = config.getBlobPattern();
+        String prefix = null;
+
+        int star = pattern.indexOf('*');
+        if (star >= 0) {
+            prefix = pattern.substring(0, star);
+        } else if (pattern.endsWith(".blob")) {
+            prefix = pattern.substring(0, pattern.length() - 5);
+        }
+
+        if (prefix != null) {
+            if (prefix.endsWith(".")) {
+                prefix = prefix.substring(0, prefix.length() - 1);
+            }
+            if (!prefix.isEmpty()) {
+                return prefix;
+            }
+        }
+
+        if (!files.isEmpty()) {
+            String name = files.get(0).file.getName();
+            if (name.endsWith(".blob")) {
+                String base = name.substring(0, name.length() - 5);
+                int lastDot = base.lastIndexOf('.');
+                if (lastDot > 0 && base.length() - lastDot - 1 == 17) {
+                    return base.substring(0, lastDot);
+                }
+                int firstDot = base.indexOf('.');
+                if (firstDot > 0) {
+                    return base.substring(0, firstDot);
+                }
+            }
+        }
+
+        return "text.index";
     }
 
     private void cleanupChunks(List<File> chunks, File tempDir) {
