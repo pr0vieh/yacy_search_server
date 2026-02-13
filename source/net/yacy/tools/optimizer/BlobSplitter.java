@@ -27,6 +27,8 @@ public class BlobSplitter {
             long chunkSize = 0;
             BufferedOutputStream bos = null;
             long processed = 0;
+            long lastUpdate = 0;
+            final long updateInterval = 10L * 1024 * 1024; // Update every 10 MB
 
             int n;
             while ((n = bis.read(buf)) > 0) {
@@ -34,32 +36,33 @@ public class BlobSplitter {
                 if (bos == null || chunkSize + n > maxSize) {
                     if (bos != null) {
                         bos.close();
-                        chunkNum++;
                     }
                     
+                    chunkNum++;
                     File chunk = new File(config.getOutputDir(), 
-                        String.format("text.index%d.blob", chunkNum + 1));
+                        String.format("text.index%d.blob", chunkNum));
                     bos = new BufferedOutputStream(new FileOutputStream(chunk), 4 * 1024 * 1024);
                     outputs.add(chunk);
                     chunkSize = 0;
-
-                    progress.updateProgress(0.3 + 0.5 * processed / srcSize,
-                        String.format("Writing chunk %d", chunkNum + 1));
                 }
 
                 bos.write(buf, 0, n);
                 chunkSize += n;
                 processed += n;
 
-                if (processed % (50L * 1024 * 1024) == 0) {
+                if (processed - lastUpdate >= updateInterval) {
                     progress.updateProgress(0.3 + 0.5 * processed / srcSize,
-                        String.format("Split: %s / %s", formatSize(processed), formatSize(srcSize)));
+                        String.format("Chunk %d - %s / %s", chunkNum, formatSize(processed), formatSize(srcSize)));
+                    lastUpdate = processed;
                 }
             }
 
             if (bos != null) {
                 bos.close();
             }
+            
+            // Final update
+            progress.updateProgress(0.8, String.format("Split into %d chunks - %s", outputs.size(), formatSize(srcSize)));
         }
 
         // Validate chunks

@@ -47,6 +47,8 @@ public class BlobOptimizationPhase {
 
     private List<byte[]> readRecords(File file) throws IOException {
         List<byte[]> records = new ArrayList<>();
+        int lastUpdateCount = 0;
+        final int updateInterval = 50_000; // Update every 50k records
 
         try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new FileInputStream(file), 4 * 1024 * 1024))) {
             long pos = 0;
@@ -62,14 +64,17 @@ public class BlobOptimizationPhase {
                     records.add(data);
                     pos += 4 + len;
 
-                    if (records.size() % 100_000 == 0) {
+                    if (records.size() - lastUpdateCount >= updateInterval) {
                         progress.updateProgress(0.1 + 0.2 * pos / size, 
                             String.format("Reading: %,d records", records.size()));
+                        lastUpdateCount = records.size();
                     }
                 } catch (EOFException e) {
                     break;
                 }
             }
+            // Final update at the end
+            progress.updateProgress(0.3, String.format("Reading: %,d records", records.size()));
         }
 
         return records;
@@ -85,17 +90,23 @@ public class BlobOptimizationPhase {
     }
 
     private void writeRecords(File out, List<byte[]> records) throws IOException {
+        int lastUpdateCount = 0;
+        final int updateInterval = 50_000; // Update every 50k records
+        
         try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(out), 4 * 1024 * 1024))) {
             for (int i = 0; i < records.size(); i++) {
                 byte[] r = records.get(i);
                 dos.writeInt(r.length);
                 dos.write(r);
 
-                if ((i + 1) % 100_000 == 0) {
-                    progress.updateProgress(0.6 + 0.2 * i / records.size(), 
-                        String.format("Writing: %d/%d", i + 1, records.size()));
+                if ((i + 1) - lastUpdateCount >= updateInterval) {
+                    progress.updateProgress(0.6 + 0.2 * (i + 1) / records.size(), 
+                        String.format("Writing: %,d/%,d", i + 1, records.size()));
+                    lastUpdateCount = i + 1;
                 }
             }
+            // Final update at the end
+            progress.updateProgress(0.8, String.format("Writing: %,d/%,d", records.size(), records.size()));
         }
     }
 

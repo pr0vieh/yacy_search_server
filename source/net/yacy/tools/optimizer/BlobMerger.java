@@ -20,6 +20,8 @@ public class BlobMerger {
         File megaBlob = new File(config.getOutputDir(), "megablob.temp");
         long total = files.stream().mapToLong(f -> f.size).sum();
         long processed = 0;
+        long lastUpdate = 0;
+        final long updateInterval = 10L * 1024 * 1024; // Update every 10 MB
 
         try (FileOutputStream out = new FileOutputStream(megaBlob)) {
             byte[] buf = new byte[4 * 1024 * 1024]; // 4MB buffer for faster I/O
@@ -33,12 +35,19 @@ public class BlobMerger {
                         out.write(buf, 0, n);
                         processed += n;
                         
-                        if (processed % (50L * 1024 * 1024) == 0) {
+                        // Update every 10 MB or when we've read enough data
+                        if (processed - lastUpdate >= updateInterval) {
                             double pct = 100.0 * processed / total;
-                            progress.updateProgress(pct / 100, String.format("Merged %d/%d", i + 1, files.size()));
+                            progress.updateProgress(pct / 100, String.format("Merged %d/%d - %s", i + 1, files.size(), bf.file.getName()));
+                            lastUpdate = processed;
                         }
                     }
                 }
+                
+                // Update progress after each file to show current file number
+                double pct = 100.0 * processed / total;
+                progress.updateProgress(pct / 100, String.format("Merged %d/%d - %s (✓)", i + 1, files.size(), bf.file.getName()));
+                lastUpdate = processed;
             }
         }
 
