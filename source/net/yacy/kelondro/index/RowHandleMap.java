@@ -48,8 +48,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.zip.Deflater;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
-import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream;
-import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorOutputStream;
 
 import net.yacy.cora.order.ByteOrder;
 import net.yacy.cora.order.CloneableIterator;
@@ -109,12 +107,10 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	}
         }
         try {
-        	// Support both LZ4 (new, fast) and GZIP (old, slow) formats
-        	if (file.getName().endsWith(".lz4")) {
-                is = new FramedLZ4CompressorInputStream(is); // LZ4 framed (pure Java)
-        	} else if (file.getName().endsWith(".gz")) {
-        	    is = new GZIPInputStream(is, 65536); // GZIP: legacy support
-        	}
+            // Support GZIP legacy format, otherwise read raw dump
+            if (file.getName().endsWith(".gz")) {
+                is = new GZIPInputStream(is, 65536);
+            }
         	
         	// Use batch loading: read multiple records at once for better performance
         	byte[] batch = new byte[recordSize * batchSize];
@@ -241,12 +237,21 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         // otherwise we could just write the byte[] from the in kelondroRowSet which would make
         // everything much faster, but this is not an option here.
         final File tmp = new File(file.getParentFile(), file.getName() + ".prt");
+        
+        // Measure iterator creation time
+        long iteratorStart = System.currentTimeMillis();
         final Iterator<Row.Entry> i = this.index.rows(true, null);
+        long iteratorTime = System.currentTimeMillis() - iteratorStart;
+        if (iteratorTime > 100) {
+            ConcurrentLog.info("RowHandleMap", "Iterator creation took " + iteratorTime + "ms");
+        }
+        
     	int c = 0;
         final int total = this.size();
         long bytesWritten = 0;
         long lastLogTime = System.currentTimeMillis();
         long startTime = lastLogTime;
+        long lastCount = 0;
     	final FileOutputStream fileStream = new FileOutputStream(tmp);
     	OutputStream os = null;
         try {
@@ -255,29 +260,51 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	} catch (final OutOfMemoryError e) {
         		os = fileStream;
         	}
-        	// Use LZ4 for new dumps (25x faster than GZIP), keep GZIP for compatibility
-        	if (file.getName().endsWith(".lz4")) {
-                os = new FramedLZ4CompressorOutputStream(os);
-        	} else if (file.getName().endsWith(".gz")) {
+            // Use GZIP only for explicit .gz dumps, default is raw dump
+            if (file.getName().endsWith(".gz")) {
         	    os = new GZIPOutputStream(os, 65536){{def.setLevel(Deflater.BEST_COMPRESSION);}};
         	}
+        	
+        	// Batch writing: collect multiple entries to reduce compression overhead
+        	// Use same batch size as read path for consistency
+        	final int recordSize = this.rowdef.objectsize;
+        	final int batchSize = Math.max(8192, (1024 * 1024) / recordSize); // ~1MB batches (minimum 8192 entries)
+        	byte[] batch = new byte[recordSize * batchSize];
+        	int batchCount = 0;
+        	
         	while (i.hasNext()) {
 			Row.Entry entry = i.next();
-            byte[] data = entry.bytes();
-			os.write(data);
-			c++;
-            bytesWritten += data.length;
+            entry.writeToArray(batch, batchCount * recordSize); // Zero-copy: write directly to batch buffer
+            batchCount++;
+            c++;
+            bytesWritten += recordSize;
+
+            // Flush batch when full
+            if (batchCount >= batchSize) {
+                os.write(batch, 0, batchCount * recordSize);
+                batchCount = 0;
+            }
 
             long now = System.currentTimeMillis();
-            if (now - lastLogTime >= 30000) {
+            if (now - lastLogTime >= 5000) { // Log every 5 seconds instead of 30
                 double pct = total > 0 ? (100.0 * c / total) : 0.0;
                 double elapsedSec = (now - startTime) / 1000.0;
                 double mbPerSec = elapsedSec > 0 ? (bytesWritten / 1024.0 / 1024.0) / elapsedSec : 0.0;
-                ConcurrentLog.info("RowHandleMap", "dumping " + file.getName() + " " + String.format("%.1f", pct) + "% (" + c + "/" + total + "), " + String.format("%.1f", mbPerSec) + " MB/s");
+                double entriesPerSec = (now - lastLogTime) > 0 ? (c - lastCount) * 1000.0 / (now - lastLogTime) : 0.0;
+                ConcurrentLog.info("RowHandleMap", "dumping " + file.getName() + " " + String.format("%.1f", pct) + "% (" + c + "/" + total + "), " + String.format("%.1f", mbPerSec) + " MB/s, " + String.format("%.0f", entriesPerSec) + " entries/s");
                 lastLogTime = now;
+                lastCount = c;
             }
         	}
+        	
+        	// Flush remaining batch
+        	if (batchCount > 0) {
+                os.write(batch, 0, batchCount * recordSize);
+        	}
         	os.flush();
+        	
+        	// Help GC by clearing batch buffer (same as in read path)
+        	batch = null;
         } finally {
         	try {
         		if(os != null) {

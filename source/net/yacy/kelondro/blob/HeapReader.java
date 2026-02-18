@@ -210,8 +210,7 @@ public class HeapReader {
         }
         this.fingerprintFileIdx = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
         if (!this.fingerprintFileIdx.exists()) {
-            final String idxPath = this.fingerprintFileIdx.getAbsolutePath();
-            final File idxRaw = idxPath.endsWith(".lz4") ? new File(idxPath.substring(0, idxPath.length() - 4)) : new File(idxPath);
+            final File idxRaw = this.fingerprintFileIdx;
             final File idxGz = new File(idxRaw.getAbsolutePath() + ".gz");
             if (idxRaw.exists()) {
                 this.fingerprintFileIdx = idxRaw;
@@ -221,8 +220,7 @@ public class HeapReader {
         }
         this.fingerprintFileGap = HeapWriter.fingerprintGapFile(this.heapFile, fingerprint);
         if (!this.fingerprintFileGap.exists()) {
-            final String gapPath = this.fingerprintFileGap.getAbsolutePath();
-            final File gapRaw = gapPath.endsWith(".lz4") ? new File(gapPath.substring(0, gapPath.length() - 4)) : new File(gapPath);
+            final File gapRaw = this.fingerprintFileGap;
             final File gapGz = new File(gapRaw.getAbsolutePath() + ".gz");
             if (gapRaw.exists()) {
                 this.fingerprintFileGap = gapRaw;
@@ -300,9 +298,7 @@ public class HeapReader {
             if (l[i].endsWith(".idx") ||
                 l[i].endsWith(".gap") ||
                 l[i].endsWith(".idx.gz") ||
-                l[i].endsWith(".gap.gz") ||
-                l[i].endsWith(".idx.lz4") ||
-                l[i].endsWith(".gap.lz4")
+                l[i].endsWith(".gap.gz")
                ) FileUtils.deletedelete(new File(d, l[i]));
         }
     }

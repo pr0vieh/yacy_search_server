@@ -318,6 +318,21 @@ public class NoticedURL {
     }
 
     /**
+     * Helper to get the Balancer for a given StackType
+     * @param stackType the stack type
+     * @return the corresponding balancer
+     */
+    private Balancer getBalancer(final StackType stackType) {
+        switch (stackType) {
+            case LOCAL:     return this.coreStack;
+            case GLOBAL:    return this.limitStack;
+            case REMOTE:    return this.remoteStack;
+            case NOLOAD:    return this.noloadStack;
+            default:        return null;
+        }
+    }
+
+    /**
      * Batch shift multiple entries from one stack to another in one operation.
      * More efficient than calling shift() multiple times as it reduces I/O operations.
      * Optimized to prefer diverse domains: distributes shifts across different hosts
@@ -354,14 +369,25 @@ public class NoticedURL {
                     final List<Request> hostUrls = this.getDomainStackReferences(fromStack, host, 1, Long.MAX_VALUE);
                     if (!hostUrls.isEmpty()) {
                         final Request entry = hostUrls.get(0);
-                        // Actually remove it from source stack
-                        final Request popped = this.pop(fromStack, false, cs, robots);
-                        if (popped != null) {
-                            final String warning = this.push(toStack, popped, null, robots);
-                            if (warning != null) {
-                                ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                        final byte[] urlhash = entry.url().hash();
+                        
+                        // Remove this specific entry from source stack (not just any via pop())
+                        final Balancer fromBalancer = this.getBalancer(fromStack);
+                        if (fromBalancer != null) {
+                            try {
+                                final HandleSet urlHashes = new RowHandleSet(Word.commonHashLength, Base64Order.enhancedCoder, 1);
+                                urlHashes.put(urlhash);
+                                final int removed = fromBalancer.remove(urlHashes);
+                                if (removed > 0) {
+                                    final String warning = this.push(toStack, entry, null, robots);
+                                    if (warning != null) {
+                                        ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                                    }
+                                    shifted++;
+                                }
+                            } catch (final IOException | SpaceExceededException e) {
+                                ConcurrentLog.warn("NoticedURL", "shiftBatch could not remove entry: " + e.getMessage());
                             }
-                            shifted++;
                         }
                     }
                 }
