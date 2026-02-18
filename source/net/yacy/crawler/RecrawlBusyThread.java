@@ -499,6 +499,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         final int maxNewUrlsPerRecrawl = sb == null ? DEFAULT_MAX_NEW_URLS_PER_RECRAWL : sb.getConfigInt(SwitchboardConstants.RECRAWL_MAX_NEW_URLS_PER_RECRAWL, DEFAULT_MAX_NEW_URLS_PER_RECRAWL);
         final int depth = allowDepthOne ? 1 : 0;
         final boolean remoteIndexing = allowRemoteIndexing && allowDepthOne;
+        // Use provided collections or fallback to default robot collection
+        final String profileCollections = collections != null ? collections : "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB;
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // crawlerUrlMustNotMatch
                 CrawlProfile.MATCH_ALL_STRING, // crawlerIpMustMatch
@@ -513,7 +515,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), maxNewUrlsPerRecrawl,
                 true, true, true, true, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow (set true to prevent excessive link following),
                 true, true, false, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
-                collections, // collections (will be overridden per URL in feedToCrawler() if URL has specific collections)
+                profileCollections, // collections (will be overridden per URL in feedToCrawler() if URL has specific collections)
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
