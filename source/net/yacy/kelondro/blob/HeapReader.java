@@ -35,7 +35,6 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ExecutionException;
 
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;
@@ -138,62 +137,40 @@ public class HeapReader {
      * Keeps index in memory for continued operation.
      */
     public void optimize() {
-        if (this.index == null) {
-            return; // Index already freed or not loaded
-        }
+        if (this.index == null) return;
         this.index.optimize();
-        // Note: Do NOT dump or unload here - index stays in memory for operations
     }
 
     /**
-     * Optimize the index structure AND dump to disk + unload from memory.
+     * Optimize the index structure and unload from memory to save RAM.
      * Used only at startup to free RAM after initial load.
-     * Subsequent access will trigger lazy-load from dump.
+     * Subsequent access will trigger lazy-load via ensureIndexLoaded().
      */
-    public void optimizeWithDump() {
-        if (this.index == null) {
-            return; // Index already freed or not loaded
-        }
-
+    public void optimizeWithUnload() {
+        if (this.index == null) return;
         this.index.optimize();
 
-        // Dump index and gap to files, then free memory
-        try {
-            String fingerprint = fingerprintFileHash(this.heapFile);
-            if (fingerprint != null) {
-                File idxFile = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
-                File gapFile = HeapWriter.fingerprintGapFile(this.heapFile, fingerprint);
+        // Reuse the single existing dump/unload path.
+        // This avoids duplicate dump logic between startup-unload and close().
+        close(true);
 
-                // Dump index to file
-                this.index.dump(idxFile);
-                log.info("HeapReader: dumped index for " + this.heapFile.getName() + " to " + idxFile.getName());
-
-                // Dump gap to file
-                this.free.dump(gapFile);
-
-                // Free memory - index will be reloaded on demand
-                this.index.close();
-                this.index = null;
-                this.free = null;
-                log.info("HeapReader: freed index memory for " + this.heapFile.getName());
-            }
-        } catch (final IOException e) {
-            log.warn("HeapReader: could not dump index for " + this.heapFile.getName() + ": " + e.getMessage());
-            // Keep index in memory if dump fails
-        }
+        // Explicit memory release (close(true) already does this, keep for clarity)
+        this.index = null;
+        this.free = null;
     }
 
     /**
-     * Ensure index is loaded. If it was freed by optimize(), reload from dump or regenerate from heap.
+     * Ensure index is loaded. If it was freed, reload from dump or regenerate from heap.
      * @throws IOException if index cannot be loaded or regenerated
      */
     private synchronized void ensureIndexLoaded() throws IOException {
-        if (this.index != null) {
-            return; // Already loaded
+        if (this.file == null) {
+            this.file = new CachedFileWriter(this.heapFile);
         }
-
+        if (this.index != null) return; // Already loaded
+        
         log.info("HeapReader: reloading index for " + this.heapFile.getName());
-
+        
         // Try to load from dump first (fast)
         if (!initIndexReadDump()) {
             // Dump doesn't exist or is corrupt - regenerate from heap (slow)
@@ -232,9 +209,27 @@ public class HeapReader {
             return false;
         }
         this.fingerprintFileIdx = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
-        if (!this.fingerprintFileIdx.exists()) this.fingerprintFileIdx = new File(this.fingerprintFileIdx.getAbsolutePath() + ".gz");
+        if (!this.fingerprintFileIdx.exists()) {
+            final String idxPath = this.fingerprintFileIdx.getAbsolutePath();
+            final File idxRaw = idxPath.endsWith(".lz4") ? new File(idxPath.substring(0, idxPath.length() - 4)) : new File(idxPath);
+            final File idxGz = new File(idxRaw.getAbsolutePath() + ".gz");
+            if (idxRaw.exists()) {
+                this.fingerprintFileIdx = idxRaw;
+            } else if (idxGz.exists()) {
+                this.fingerprintFileIdx = idxGz;
+            }
+        }
         this.fingerprintFileGap = HeapWriter.fingerprintGapFile(this.heapFile, fingerprint);
-        if (!this.fingerprintFileGap.exists()) this.fingerprintFileGap = new File(this.fingerprintFileGap.getAbsolutePath() + ".gz");
+        if (!this.fingerprintFileGap.exists()) {
+            final String gapPath = this.fingerprintFileGap.getAbsolutePath();
+            final File gapRaw = gapPath.endsWith(".lz4") ? new File(gapPath.substring(0, gapPath.length() - 4)) : new File(gapPath);
+            final File gapGz = new File(gapRaw.getAbsolutePath() + ".gz");
+            if (gapRaw.exists()) {
+                this.fingerprintFileGap = gapRaw;
+            } else if (gapGz.exists()) {
+                this.fingerprintFileGap = gapGz;
+            }
+        }
         if (!this.fingerprintFileIdx.exists() || !this.fingerprintFileGap.exists()) {
             deleteAllFingerprints(this.heapFile, this.fingerprintFileIdx.getName(), this.fingerprintFileGap.getName());
             return false;
@@ -305,17 +300,30 @@ public class HeapReader {
             if (l[i].endsWith(".idx") ||
                 l[i].endsWith(".gap") ||
                 l[i].endsWith(".idx.gz") ||
-                l[i].endsWith(".gap.gz")
+                l[i].endsWith(".gap.gz") ||
+                l[i].endsWith(".idx.lz4") ||
+                l[i].endsWith(".gap.lz4")
                ) FileUtils.deletedelete(new File(d, l[i]));
         }
     }
 
     private void initIndexReadFromHeap() throws IOException {
         // this initializes the this.index object by reading positions from the heap file
-        log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (this.file.length() / 1024 / 1024) + " MB. Please wait.");
+        final long totalBytes = this.file.length();
+        log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (totalBytes / 1024 / 1024) + " MB. Please wait.");
 
         this.free = new Gap();
-        RowHandleMap.initDataConsumer indexready = RowHandleMap.asynchronusInitializer(this.name() + ".initializer", this.keylength, this.ordering, 8, Math.max(10, (int) (Runtime.getRuntime().freeMemory() / (10 * 1024 * 1024))));
+
+        // Use RAM-based RowHandleMap (default)
+        // Estimate expected number of entries from file size to get a better RAMIndexCluster spread.
+        // Using freeMemory() here caused expectedspace ~10..50, which collapsed spread to 1 shard
+        // and triggered huge single RowCollection grow allocations (SpaceExceededException).
+        final long avgRecordBytes = Math.max(128L, this.keylength + 8L);
+        final long estimatedEntriesLong = Math.max(10L, totalBytes / avgRecordBytes);
+        final int estimatedEntries = estimatedEntriesLong > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) estimatedEntriesLong;
+        this.index = new RowHandleMap(this.keylength, this.ordering, 8, estimatedEntries, this.name() + ".initializer");
+
+        // Read all records from heap and build index
         byte[] key = new byte[this.keylength];
         
         // Use buffered stream reading instead of RandomAccessFile.seek() for 100x+ performance
@@ -327,6 +335,13 @@ public class HeapReader {
         try {
             long seek = 0;
             int reclen;
+            long records = 0;
+            long startTime = System.currentTimeMillis();
+            long lastLogTime = startTime;
+            long lastLogSeek = 0;
+            final boolean inplace = Boolean.getBoolean("yacy.index.progress.inplace");
+            long lastConsoleTime = startTime;
+            String lastConsoleLine = "";
             
             while (true) {
                 try {
@@ -352,7 +367,12 @@ public class HeapReader {
                         if (reclen > 0) this.free.put(seek, reclen);
                     } else {
                         if (this.ordering.wellformed(key)) {
-                            indexready.consume(key, seek);
+                            try {
+                                this.index.putUnique(key, seek);
+                            } catch (final SpaceExceededException e) {
+                                throw new IOException("Insufficient heap while building index for " + this.heapFile.getName() +
+                                        " at seek " + seek + " (records: " + records + ")", e);
+                            }
                             key = new byte[this.keylength];
                         } else {
                             // free the lost space
@@ -375,6 +395,34 @@ public class HeapReader {
                     
                     // new seek position
                     seek += 4L + reclen;
+                    records++;
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastLogTime >= 60000 || seek - lastLogSeek >= (512L * 1024 * 1024)) {
+                        double pct = totalBytes > 0 ? (100.0 * seek / totalBytes) : 0.0;
+                        double elapsedSec = (now - startTime) / 1000.0;
+                        double mbPerSec = elapsedSec > 0 ? (seek / 1024.0 / 1024.0) / elapsedSec : 0.0;
+                        long etaMillis = (seek > 0 && totalBytes > 0) ? (long) ((totalBytes - seek) / (seek / (double) (now - startTime))) : 0;
+                        log.info("HeapReader: indexing " + this.heapFile.getName() + " " + String.format("%.1f", pct) + "% (" + (seek / 1024 / 1024) + "/" + (totalBytes / 1024 / 1024) + " MB), " + records + " records, " + String.format("%.1f", mbPerSec) + " MB/s, ETA " + formatDuration(etaMillis));
+                        lastLogTime = now;
+                        lastLogSeek = seek;
+                    }
+
+                    if (inplace && now - lastConsoleTime >= 1000) {
+                        double pct = totalBytes > 0 ? (100.0 * seek / totalBytes) : 0.0;
+                        String line = "HeapReader: indexing " + this.heapFile.getName() + " " + String.format("%.1f", pct) + "% (" + (seek / 1024 / 1024) + "/" + (totalBytes / 1024 / 1024) + " MB), " + records + " records";
+                        if (line.length() < lastConsoleLine.length()) {
+                            StringBuilder pad = new StringBuilder(line);
+                            for (int i = line.length(); i < lastConsoleLine.length(); i++) {
+                                pad.append(' ');
+                            }
+                            line = pad.toString();
+                        }
+                        System.out.print("\r" + line);
+                        System.out.flush();
+                        lastConsoleLine = line;
+                        lastConsoleTime = now;
+                    }
                     
                 } catch (final EOFException e) {
                     // EOF reached
@@ -383,19 +431,27 @@ public class HeapReader {
             }
         } finally {
             dis.close(); // closes the BufferedInputStream and FileInputStream
+            if (Boolean.getBoolean("yacy.index.progress.inplace")) {
+                System.out.print("\n");
+                System.out.flush();
+            }
         }
-        
-        indexready.finish();
 
-        // finish the index generation
-        try {
-            this.index = indexready.result();
-        } catch (final InterruptedException e) {
-        	ConcurrentLog.logException(e);
-        } catch (final ExecutionException e) {
-        	ConcurrentLog.logException(e);
-        }
         log.info("HeapReader: finished index generation for " + this.heapFile.toString() + ", " + this.index.size() + " entries, " + this.free.size() + " gaps.");
+    }
+
+    private static String formatDuration(long millis) {
+        if (millis <= 0) return "0s";
+        long seconds = millis / 1000;
+        long minutes = seconds / 60;
+        long hours = minutes / 60;
+        if (hours > 0) {
+            return hours + "h " + (minutes % 60) + "m";
+        }
+        if (minutes > 0) {
+            return minutes + "m " + (seconds % 60) + "s";
+        }
+        return seconds + "s";
     }
 
     private void mergeFreeEntries() throws IOException {

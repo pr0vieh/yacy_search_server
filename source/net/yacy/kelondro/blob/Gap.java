@@ -37,6 +37,11 @@ import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
+
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream;
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorOutputStream;
 
 /**
  * this is an extension of a set of {seek, size} pairs
@@ -65,13 +70,33 @@ public class Gap extends TreeMap<Long, Integer> {
         FileInputStream fis = null;
         try {
         	fis = new FileInputStream(file);
-            is = new DataInputStream(new BufferedInputStream(fis, (Integer.SIZE + Long.SIZE) * 1024)); // equals 16*1024*recordsize
+            BufferedInputStream bis = new BufferedInputStream(fis, (Integer.SIZE + Long.SIZE) * 1024); // equals 16*1024*recordsize
+            if (file.getName().endsWith(".lz4")) {
+                is = new DataInputStream(new FramedLZ4CompressorInputStream(bis));
+            } else if (file.getName().endsWith(".gz")) {
+                is = new DataInputStream(new GZIPInputStream(bis));
+            } else {
+                is = new DataInputStream(bis);
+            }
         } catch (final OutOfMemoryError e) {
         	if(fis != null) {
         		/* Reuse if possible the already created FileInputStream */
-                is = new DataInputStream(fis);
+                if (file.getName().endsWith(".lz4")) {
+                    is = new DataInputStream(new FramedLZ4CompressorInputStream(fis));
+                } else if (file.getName().endsWith(".gz")) {
+                    is = new DataInputStream(new GZIPInputStream(fis));
+                } else {
+                    is = new DataInputStream(fis);
+                }
         	} else {
-        		is = new DataInputStream(new FileInputStream(file));
+			FileInputStream fallbackFis = new FileInputStream(file);
+			if (file.getName().endsWith(".lz4")) {
+                is = new DataInputStream(new FramedLZ4CompressorInputStream(fallbackFis));
+			} else if (file.getName().endsWith(".gz")) {
+				is = new DataInputStream(new GZIPInputStream(fallbackFis));
+			} else {
+				is = new DataInputStream(fallbackFis);
+			}
         	}
 
         }
@@ -110,9 +135,22 @@ public class Gap extends TreeMap<Long, Integer> {
         		final FileOutputStream fileStream = new FileOutputStream(tmp);
         ) {
         	try {
-        		os = new DataOutputStream(new BufferedOutputStream(fileStream, (Integer.SIZE + Long.SIZE) * 1024)); // = 16*1024*recordsize
+            BufferedOutputStream bos = new BufferedOutputStream(fileStream, (Integer.SIZE + Long.SIZE) * 1024); // = 16*1024*recordsize
+            if (file.getName().endsWith(".lz4")) {
+                os = new DataOutputStream(new FramedLZ4CompressorOutputStream(bos));
+            } else if (file.getName().endsWith(".gz")) {
+                os = new DataOutputStream(new GZIPOutputStream(bos));
+            } else {
+                os = new DataOutputStream(bos);
+            }
         	} catch (final OutOfMemoryError e) {
-        		os = new DataOutputStream(fileStream);
+            if (file.getName().endsWith(".lz4")) {
+                os = new DataOutputStream(new FramedLZ4CompressorOutputStream(fileStream));
+            } else if (file.getName().endsWith(".gz")) {
+                os = new DataOutputStream(new GZIPOutputStream(fileStream));
+            } else {
+                os = new DataOutputStream(fileStream);
+            }
         	}
         	try {
         		Map.Entry<Long, Integer> e;

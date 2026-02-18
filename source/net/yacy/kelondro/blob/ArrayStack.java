@@ -208,8 +208,9 @@ public class ArrayStack implements BLOB {
                        } else {
                            oneBlob = new HeapModifier(f, keylength, ordering);
                            if (oneBlob instanceof HeapReader) {
-                               // Startup optimization: dump and free index to save memory
-                               ((HeapReader)oneBlob).optimizeWithDump();
+                               // Startup optimization: optimize and free index to save memory
+                               // Index will be dumped automatically at shutdown by close()
+                               ((HeapReader)oneBlob).optimizeWithUnload();
                            } else {
                                oneBlob.optimize(); // fallback for other BLOB types
                            }
@@ -217,8 +218,7 @@ public class ArrayStack implements BLOB {
                        sortedItems.put(Long.valueOf(time), new blobItem(d, f, oneBlob));
                    } catch (final IOException e) {
                        if (deleteonfail) {
-                           ConcurrentLog.warn("KELONDRO", "ArrayStack: cannot read file " + f.getName() + ", deleting it (smart fail; alternative would be: crash; required user action would be same as deletion)");
-                           f.delete();
+                           ConcurrentLog.warn("KELONDRO", "ArrayStack: cannot read file " + f.getName() + ", keeping it (no delete; will skip for now). Cause: " + e.getMessage());
                        } else {
                            throw new IOException(e.getMessage(), e);
                        }
