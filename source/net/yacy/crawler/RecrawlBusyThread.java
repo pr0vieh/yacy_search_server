@@ -27,8 +27,11 @@ package net.yacy.crawler;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.solr.common.SolrDocument;
@@ -104,8 +107,11 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     private final int chunksize = 100;
     private final Switchboard sb;
 
-    /** buffer of urls to recrawl */
-    private final Set<DigestURL> urlstack;
+    /** buffer of urls to recrawl with their original collections */
+    private final Map<DigestURL, String> urlstack;
+
+    /** Base collections to use for recrawled URLs that don't have specific collections */
+    private final String baseRecrawlCollections;
 
     /** Set to track all URLs that have been processed in this recrawl job (to avoid duplicates) */
     private final Set<String> processedUrls = new HashSet<>();
@@ -169,7 +175,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         this.deleteOnRecrawl = deleteOnRecrawl;
         this.maxRemoteUrlsPerBatch = Math.max(10, maxRemoteUrlsPerBatch);
         this.maxRemoteQueueSize = Math.max(100, maxRemoteQueueSize);
-        this.urlstack = new HashSet<>();
+        this.urlstack = new HashMap<>();
+        this.baseRecrawlCollections = "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB;
         // workaround to prevent solr exception on existing index (not fully reindexed) since intro of schema with docvalues
         // org.apache.solr.core.SolrCore java.lang.IllegalStateException: unexpected docvalues type NONE for field 'load_date_dt' (expected=NUMERIC). Use UninvertingReader or index with docvalues.
         this.solrSortBy = CollectionSchema.load_date_dt.getSolrFieldName() + " asc";
@@ -286,19 +293,40 @@ public class RecrawlBusyThread extends AbstractBusyThread {
 
         if (!this.urlstack.isEmpty()) {
             final CrawlProfile profile = this.sb.crawler.defaultRecrawlJobProfile;
+            // Use profile collection or fallback to baseRecrawlCollections if profile has none
+            final String baseCollections = profile.collectionName() != null ? profile.collectionName() : this.baseRecrawlCollections;
 
-            for (final DigestURL url : this.urlstack) {
+            for (final Map.Entry<DigestURL, String> entry : this.urlstack.entrySet()) {
+                final DigestURL url = entry.getKey();
+                final String urlCollections = entry.getValue();
+
+                // Use URL-specific collection if available, otherwise keep profile's base collection
+                if (urlCollections != null && !urlCollections.isEmpty()) {
+                    profile.setCollections(urlCollections);
+                } else if (profile.collectionName() == null || profile.collectionName().isEmpty()) {
+                    // Set base collection as fallback only if profile has no collection
+                    profile.setCollections(baseCollections);
+                }
+
                 final Request request = new Request(ASCII.getBytes(this.sb.peers.mySeed().hash), url, null, "",
                         new Date(), profile.handle(), 0, profile.timezoneOffset());
+
                 String acceptedError = this.sb.crawlStacker.checkAcceptanceChangeable(url, profile, 0);
-                if (!this.includefailed && acceptedError == null) { // skip check if failed docs to be included
-                    acceptedError = this.sb.crawlStacker.checkAcceptanceInitially(url, profile);
-                }
+
                 if (acceptedError != null) {
                     this.rejectedUrlsCount++;
                     ConcurrentLog.info(THREAD_NAME, "addToCrawler: cannot load " + url.toNormalform(true) + ": " + acceptedError);
                     continue;
+                } else if (!this.includefailed) {
+                    // skip check if failed docs to be included
+                    acceptedError = this.sb.crawlStacker.checkAcceptanceInitially(url, profile);
+                    if (acceptedError != null) {
+                        this.rejectedUrlsCount++;
+                        ConcurrentLog.info(THREAD_NAME, "addToCrawler: cannot load " + url.toNormalform(true) + ": " + acceptedError);
+                        continue;
+                    }
                 }
+
                 final String s;
                 s = this.sb.crawlQueues.noticeURL.push(NoticedURL.StackType.LOCAL, request, profile, this.sb.robots);
 
@@ -310,6 +338,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                     this.recrawledUrlsCount++;
                 }
             }
+            // Reset profile collections to base value to avoid state leakage
+            profile.setCollections(baseCollections);
             this.urlstack.clear();
         }
         return (added > 0);
@@ -405,7 +435,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
         try {
             // query all or only httpstatus=200 depending on includefailed flag
             docList = solrConnector.getDocumentListByQuery(RecrawlBusyThread.buildSelectionQuery(this.currentQuery, this.includefailed),
-                this.solrSortBy, this.chunkstart, this.chunksize, CollectionSchema.id.getSolrFieldName(), CollectionSchema.sku.getSolrFieldName());
+                this.solrSortBy, this.chunkstart, this.chunksize, CollectionSchema.id.getSolrFieldName(), CollectionSchema.sku.getSolrFieldName(),
+                CollectionSchema.collection_sxt.getSolrFieldName());
             this.urlsToRecrawl = docList.getNumFound();
         } catch (final Throwable e) {
             this.urlsToRecrawl = 0;
@@ -430,8 +461,8 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                     // Mark URL as processed to prevent duplicates within current chunk
                     this.processedUrls.add(url.toNormalform(false));
 
-                    // Add to urlstack for later feeding to crawler
-                    this.urlstack.add(url);
+                    // Add to urlstack for later feeding to crawler (with collections if available)
+                    this.urlstack.put(url, extractCollections(doc));
                     if (this.deleteOnRecrawl) tobedeletedIDs.add((String) doc.getFieldValue(CollectionSchema.id.getSolrFieldName()));
                 } catch (final MalformedURLException ex) {
                     this.malformedUrlsCount++;
@@ -459,9 +490,10 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     }
 
     /**
+     * @param collections the base collections to use for recrawl (can be null)
      * @return a new default CrawlProfile instance to be used for recrawl jobs.
      */
-    public static CrawlProfile buildDefaultCrawlProfile(final Switchboard sb) {
+    public static CrawlProfile buildDefaultCrawlProfile(final Switchboard sb, final String collections) {
         final boolean allowRemoteIndexing = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
         final boolean allowDepthOne = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
         final int maxNewUrlsPerRecrawl = sb == null ? DEFAULT_MAX_NEW_URLS_PER_RECRAWL : sb.getConfigInt(SwitchboardConstants.RECRAWL_MAX_NEW_URLS_PER_RECRAWL, DEFAULT_MAX_NEW_URLS_PER_RECRAWL);
@@ -481,10 +513,28 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), maxNewUrlsPerRecrawl,
                 true, true, true, true, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow (set true to prevent excessive link following),
                 true, true, false, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
-                "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
+                collections, // collections (will be overridden per URL in feedToCrawler() if URL has specific collections)
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
         return profile;
+    }
+
+    /**
+     * Extract collections from a Solr document's collection_sxt field.
+     * @param doc the Solr document
+     * @return comma-separated collection names or null when none
+     */
+    private static String extractCollections(final SolrDocument doc) {
+        final Collection<Object> values = doc.getFieldValues(CollectionSchema.collection_sxt.getSolrFieldName());
+        if (values == null || values.isEmpty()) return null;
+        final StringBuilder sb = new StringBuilder();
+        for (final Object val : values) {
+            if (val != null) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(val.toString());
+            }
+        }
+        return sb.length() > 0 ? sb.toString() : null;
     }
 
     /**
