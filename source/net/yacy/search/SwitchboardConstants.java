@@ -147,6 +147,7 @@ public final class SwitchboardConstants {
     public static final String CRAWLJOB_REMOTE_TRIGGERED_CRAWL_BUSYSLEEP        = "62_remotetriggeredcrawl_busysleep";
     public static final String RECRAWL_ALLOW_REMOTE_INDEXING                    = "recrawlindex.allowRemoteIndexing";
     public static final String RECRAWL_ALLOW_DEPTH_ONE                          = "recrawlindex.allowDepthOne";
+    public static final String RECRAWL_MAX_NEW_URLS_PER_RECRAWL                 = "recrawlindex.maxNewUrlsPerRecrawl";
     // 70_packs
     /**
      * <p><code>public static final String <strong>PACKS</strong> = "70_packs"</code></p>

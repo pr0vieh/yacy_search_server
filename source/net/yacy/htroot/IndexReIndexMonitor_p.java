@@ -181,10 +181,12 @@ public class IndexReIndexMonitor_p {
 			if (post.containsKey("recrawlDefaults")) {
 				allowRemoteIndexing = true;
 				allowDepthOne = true;
+				maxNewUrlsPerRecrawl = RecrawlBusyThread.DEFAULT_MAX_NEW_URLS_PER_RECRAWL;
 			}
 
 			sb.setConfig(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, allowRemoteIndexing);
 			sb.setConfig(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, allowDepthOne);
+			sb.setConfig(SwitchboardConstants.RECRAWL_MAX_NEW_URLS_PER_RECRAWL, maxNewUrlsPerRecrawl);
 			refreshRecrawlDefaultProfile(sb);
 
             if (recrawlbt == null || recrawlbt.shutdownInProgress()) {

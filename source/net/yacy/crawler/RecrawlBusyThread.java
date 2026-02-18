@@ -464,6 +464,7 @@ public class RecrawlBusyThread extends AbstractBusyThread {
     public static CrawlProfile buildDefaultCrawlProfile(final Switchboard sb) {
         final boolean allowRemoteIndexing = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_REMOTE_INDEXING, true);
         final boolean allowDepthOne = sb == null ? true : sb.getConfigBool(SwitchboardConstants.RECRAWL_ALLOW_DEPTH_ONE, true);
+        final int maxNewUrlsPerRecrawl = sb == null ? DEFAULT_MAX_NEW_URLS_PER_RECRAWL : sb.getConfigInt(SwitchboardConstants.RECRAWL_MAX_NEW_URLS_PER_RECRAWL, DEFAULT_MAX_NEW_URLS_PER_RECRAWL);
         final int depth = allowDepthOne ? 1 : 0;
         final boolean remoteIndexing = allowRemoteIndexing && allowDepthOne;
         final CrawlProfile profile = new CrawlProfile(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB, CrawlProfile.MATCH_ALL_STRING, // crawlerUrlMustMatch
@@ -477,9 +478,9 @@ public class RecrawlBusyThread extends AbstractBusyThread {
                 CrawlProfile.MATCH_ALL_STRING, // indexContentMustMatch
                 CrawlProfile.MATCH_NEVER_STRING, // indexContentMustNotMatch
                 false, //noindexWhenCanonicalUnequalURL
-                depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), -1,
-                true, true, true, false, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow,
-                true, true, true, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
+                depth, false, CrawlProfile.getRecrawlDate(CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB_RECRAWL_CYCLE), maxNewUrlsPerRecrawl,
+                true, true, true, true, // crawlingQ, followFrames, obeyHtmlRobotsNoindex, obeyHtmlRobotsNofollow (set true to prevent excessive link following),
+                true, true, false, remoteIndexing, -1, false, true, CrawlProfile.MATCH_NEVER_STRING, CacheStrategy.IFFRESH,
                 "robot_" + CrawlSwitchboard.CRAWL_PROFILE_RECRAWL_JOB,
                 ClientIdentification.yacyInternetCrawlerAgentName,
                 TagValency.EVAL, null, null, 0);
