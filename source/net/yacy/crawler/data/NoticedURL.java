@@ -382,8 +382,19 @@ public class NoticedURL {
                                     final String warning = this.push(toStack, entry, null, robots);
                                     if (warning != null) {
                                         ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                                        // Push failed (e.g., double occurrence) - restore URL to fromStack to prevent data loss
+                                        try {
+                                            final String restoreWarning = this.push(fromStack, entry, null, robots);
+                                            if (restoreWarning != null) {
+                                                ConcurrentLog.warn("NoticedURL", "shiftBatch: failed to restore entry to " + fromStack + ": " + restoreWarning);
+                                            }
+                                        } catch (final Exception e) {
+                                            ConcurrentLog.warn("NoticedURL", "shiftBatch: exception restoring entry: " + e.getMessage());
+                                        }
+                                    } else {
+                                        // Only count as shifted if push was successful
+                                        shifted++;
                                     }
-                                    shifted++;
                                 }
                             } catch (final IOException | SpaceExceededException e) {
                                 ConcurrentLog.warn("NoticedURL", "shiftBatch could not remove entry: " + e.getMessage());
@@ -399,8 +410,19 @@ public class NoticedURL {
                     final String warning = this.push(toStack, entry, null, robots);
                     if (warning != null) {
                         ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                        // Push failed - restore URL to fromStack to prevent data loss
+                        try {
+                            final String restoreWarning = this.push(fromStack, entry, null, robots);
+                            if (restoreWarning != null) {
+                                ConcurrentLog.warn("NoticedURL", "shiftBatch: failed to restore entry to " + fromStack + ": " + restoreWarning);
+                            }
+                        } catch (final Exception e) {
+                            ConcurrentLog.warn("NoticedURL", "shiftBatch: exception restoring entry: " + e.getMessage());
+                        }
+                    } else {
+                        // Only count as shifted if push was successful
+                        shifted++;
                     }
-                    shifted++;
                 }
             } else {
                 // Only one domain or empty - just shift sequentially
@@ -410,8 +432,19 @@ public class NoticedURL {
                     final String warning = this.push(toStack, entry, null, robots);
                     if (warning != null) {
                         ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
+                        // Push failed - restore URL to fromStack to prevent data loss
+                        try {
+                            final String restoreWarning = this.push(fromStack, entry, null, robots);
+                            if (restoreWarning != null) {
+                                ConcurrentLog.warn("NoticedURL", "shiftBatch: failed to restore entry to " + fromStack + ": " + restoreWarning);
+                            }
+                        } catch (final Exception e) {
+                            ConcurrentLog.warn("NoticedURL", "shiftBatch: exception restoring entry: " + e.getMessage());
+                        }
+                    } else {
+                        // Only count as shifted if push was successful
+                        shifted++;
                     }
-                    shifted++;
                 }
             }
         } catch (final IOException e) {
