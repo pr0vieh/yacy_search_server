@@ -456,7 +456,9 @@ public class IndexReIndexMonitor_p {
 			return;
 		}
 
-		final CrawlProfile profile = RecrawlBusyThread.buildDefaultCrawlProfile(sb);
+		final CrawlProfile profile = RecrawlBusyThread.buildDefaultCrawlProfile(
+			sb,
+			sb.getConfig("recrawl.baseCollections", null));
 		sb.crawler.defaultRecrawlJobProfile = profile;
 		sb.crawler.putActive(UTF8.getBytes(profile.handle()), profile);
 	}

@@ -842,7 +842,11 @@ public class CrawlQueues {
                     profile = null;
                 }
             } catch (InterruptedException e2) {
-                ConcurrentLog.logException(e2);
+                // Shutdown uses interrupt to wake the loader thread.
+                Thread.currentThread().interrupt();
+                if (CrawlQueues.log.isFine()) {
+                    CrawlQueues.log.fine("Loader interrupted, exiting.");
+                }
             }
         }
     }

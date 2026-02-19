@@ -208,9 +208,14 @@ public class ArrayStack implements BLOB {
                        } else {
                            oneBlob = new HeapModifier(f, keylength, ordering);
                            if (oneBlob instanceof HeapReader) {
-                               // Startup optimization: optimize and free index to save memory
-                               // Index will be dumped automatically at shutdown by close()
-                               ((HeapReader)oneBlob).optimizeWithUnload();
+                               final HeapReader heapReader = (HeapReader) oneBlob;
+                               if (heapReader.isIndexLoadedFromDump()) {
+                                   // Dump already exists; avoid unload/regen churn on startup.
+                                   heapReader.optimize();
+                               } else {
+                                   // No valid dump was found; optimize and unload after rebuild.
+                                   heapReader.optimizeWithUnload();
+                               }
                            } else {
                                oneBlob.optimize(); // fallback for other BLOB types
                            }

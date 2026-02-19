@@ -71,6 +71,7 @@ public class HeapReader {
     protected Gap                free;       // set of {seek, size} pairs denoting space and position of free records
     private   File               fingerprintFileIdx, fingerprintFileGap; // files with dumped indexes. Will be deleted if file is written
     private   Date               closeDate;  // records a time when the file was closed; used for debugging
+    private   boolean            indexLoadedFromDump; // true when index was loaded from dump (no rebuild needed)
 
     public HeapReader(
             final File heapFile,
@@ -84,6 +85,7 @@ public class HeapReader {
         this.heapFile.getParentFile().mkdirs();
         this.file = new CachedFileWriter(this.heapFile);
         this.closeDate = null;
+        this.indexLoadedFromDump = false;
 
         // read or initialize the index
         this.fingerprintFileIdx = null;
@@ -109,12 +111,15 @@ public class HeapReader {
             if (!ok) {
                 log.warn("HeapReader: verification of idx file for " + heapFile.toString() + " failed, re-building index");
                 initIndexReadFromHeap();
+                this.indexLoadedFromDump = false;
             } else {
                 log.info("HeapReader: using a dump of the index of " + heapFile.toString() + ".");
+                this.indexLoadedFromDump = true;
             }
         } else {
             // if we did not have a dump, create a new index
             initIndexReadFromHeap();
+            this.indexLoadedFromDump = false;
         }
 
         // merge gaps that follow directly
@@ -157,6 +162,13 @@ public class HeapReader {
         // Explicit memory release (close(true) already does this, keep for clarity)
         this.index = null;
         this.free = null;
+    }
+
+    /**
+     * @return true when the index was loaded from dump (no rebuild from heap)
+     */
+    public boolean isIndexLoadedFromDump() {
+        return this.indexLoadedFromDump;
     }
 
     /**
@@ -304,6 +316,7 @@ public class HeapReader {
     }
 
     private void initIndexReadFromHeap() throws IOException {
+        this.indexLoadedFromDump = false;
         // this initializes the this.index object by reading positions from the heap file
         final long totalBytes = this.file.length();
         log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (totalBytes / 1024 / 1024) + " MB. Please wait.");
