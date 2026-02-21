@@ -78,6 +78,7 @@ import net.yacy.kelondro.data.word.WordReferenceRow;
 import net.yacy.kelondro.index.RowHandleSet;
 import net.yacy.kelondro.rwi.IODispatcher;
 import net.yacy.kelondro.rwi.IndexCell;
+import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.kelondro.rwi.ReferenceContainer;
 import net.yacy.kelondro.rwi.ReferenceFactory;
 import net.yacy.kelondro.table.IndexTable;
@@ -85,6 +86,7 @@ import net.yacy.kelondro.util.Bitfield;
 import net.yacy.kelondro.util.ISO639;
 import net.yacy.kelondro.util.MemoryControl;
 import net.yacy.repository.LoaderDispatcher;
+import net.yacy.search.Switchboard;
 import net.yacy.search.query.SearchEvent;
 import net.yacy.search.schema.CollectionConfiguration;
 import net.yacy.search.schema.CollectionSchema;
@@ -122,7 +124,7 @@ public class Segment {
     private   final ConcurrentLog                  log;
     private   final File                           segmentPath;
     protected final Fulltext                       fulltext;
-    protected       IndexCell<WordReference>       termIndex;
+    protected       IndexCellBackend<WordReference> termIndex;
     private         IndexCell<CitationReference>   urlCitationIndex;
     private         IndexTable                     firstSeenIndex;
     private         IndexTable                     loadTimeIndex;
@@ -155,21 +157,37 @@ public class Segment {
     public void connectRWI(final int entityCacheMaxSize, final long maxFileSize) throws IOException {
         if (this.termIndex != null) return;
 
-        if (this.merger == null) { // init shared iodispatcher if none running
-            this.merger = new IODispatcher(2, 2, writeBufferSize);
-            this.merger.start();
+        boolean useRocksDB = false;
+        final String rocksdbFlag = System.getProperty("index.rocksdb.enabled");
+        if (rocksdbFlag != null) {
+            useRocksDB = "true".equalsIgnoreCase(rocksdbFlag.trim());
+        } else {
+            final Switchboard sb = Switchboard.getSwitchboard();
+            if (sb != null) {
+                useRocksDB = sb.getConfigBool("index.rocksdb.enabled", false);
+            }
         }
-        this.termIndex = new IndexCell<WordReference>(
-                        new File(this.segmentPath, "default"),
-                        termIndexName,
-                        wordReferenceFactory,
-                        wordOrder,
-                        Word.commonHashLength,
-                        entityCacheMaxSize,
-                        targetFileSize,
-                        maxFileSize,
-                        writeBufferSize,
-                        this.merger);
+
+        if (useRocksDB) {
+            // RocksDB Backend verwenden
+            this.termIndex = new net.yacy.rocksdb.RocksDBIndexCellBackend(new java.io.File(this.segmentPath, "rocksdb"));
+        } else {
+            if (this.merger == null) { // init shared iodispatcher if none running
+                this.merger = new IODispatcher(2, 2, writeBufferSize);
+                this.merger.start();
+            }
+            this.termIndex = new IndexCell<WordReference>(
+                            new File(this.segmentPath, "default"),
+                            termIndexName,
+                            wordReferenceFactory,
+                            wordOrder,
+                            Word.commonHashLength,
+                            entityCacheMaxSize,
+                            targetFileSize,
+                            maxFileSize,
+                            writeBufferSize,
+                            this.merger);
+        }
     }
 
     public void disconnectRWI() {
@@ -220,7 +238,7 @@ public class Segment {
         return this.fulltext;
     }
 
-    public IndexCell<WordReference> termIndex() {
+    public IndexCellBackend<WordReference> termIndex() {
         return this.termIndex;
     }
 

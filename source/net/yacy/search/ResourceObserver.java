@@ -36,6 +36,7 @@ import net.yacy.crawler.data.Cache;
 import net.yacy.crawler.data.ResultURLs;
 import net.yacy.kelondro.data.word.WordReference;
 import net.yacy.kelondro.rwi.IndexCell;
+import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.kelondro.util.MemoryControl;
 import net.yacy.peers.NewsPool;
 import net.yacy.peers.operation.yacyRelease;
@@ -149,7 +150,7 @@ public class ResourceObserver {
                 }
                 
                 // cut away too large RWIs
-                IndexCell<WordReference> termIndex = sb.index.termIndex();
+                IndexCellBackend<WordReference> termIndex = sb.index.termIndex();
                 if (termIndex != null) try {
                     int shrinkedReferences = termIndex.deleteOld(100, 10000);
                     if (shrinkedReferences > 0) {

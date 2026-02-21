@@ -26,6 +26,7 @@
 
 package net.yacy.search.query;
 
+import java.io.IOException;
 import java.net.MalformedURLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -1521,8 +1522,12 @@ public final class SearchEvent implements ScoreMapUpdatesListener {
             if ((this.query.constraint != null) && (this.query.constraint.get(Tokenizer.flag_cat_indexof)) && (!(pagetitle.startsWith("index of")))) {
                 final Iterator<byte[]> wi = this.query.getQueryGoal().getIncludeHashes().iterator();
                 if (this.query.getSegment().termIndex() != null) {
-                    while (wi.hasNext()) {
-                        this.query.getSegment().termIndex().removeDelayed(wi.next(), page.hash());
+                    try {
+                        while (wi.hasNext()) {
+                            this.query.getSegment().termIndex().removeDelayed(wi.next(), page.hash());
+                        }
+                    } catch (final IOException e) {
+                        log.warn("Error removing delayed", e);
                     }
                 }
                 if (log.isFine()) log.fine("dropped RWI: url does not match index-of constraint");

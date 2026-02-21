@@ -48,6 +48,7 @@ import net.yacy.cora.date.GenericFormatter;
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;
 import net.yacy.cora.document.id.DigestURL;
+import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.cora.document.id.MultiProtocolURL;
 import net.yacy.cora.order.Base64Order;
 import net.yacy.cora.protocol.ClientIdentification;
@@ -521,12 +522,16 @@ public class WorkTables extends Tables {
         row.put(WorkTables.TABLE_API_COL_DATE_NEXT_EXEC, new Date(d));
     }
 
-    public void failURLsRegisterMissingWord(IndexCell<WordReference> indexCell, final DigestURL url, HandleSet queryHashes) {
+    public void failURLsRegisterMissingWord(IndexCellBackend<WordReference> indexCell, final DigestURL url, HandleSet queryHashes) {
 
         // remove words from index
         if (indexCell != null) {
-            for (final byte[] word: queryHashes) {
-                indexCell.removeDelayed(word, url.hash());
+            try {
+                for (final byte[] word: queryHashes) {
+                    indexCell.removeDelayed(word, url.hash());
+                }
+            } catch (IOException e) {
+                ConcurrentLog.logException(e);
             }
         }
     }

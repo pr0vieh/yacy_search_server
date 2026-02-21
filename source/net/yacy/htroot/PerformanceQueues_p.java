@@ -38,6 +38,7 @@ import net.yacy.cora.protocol.RequestHeader;
 import net.yacy.cora.protocol.http.HTTPClient;
 import net.yacy.data.TransactionManager;
 import net.yacy.kelondro.data.word.WordReference;
+import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.kelondro.rwi.IndexCell;
 import net.yacy.kelondro.util.FileUtils;
 import net.yacy.kelondro.util.Formatter;
@@ -160,7 +161,7 @@ public class PerformanceQueues_p {
         	sb.setConfig("performanceSpeed", post.getInt("profileSpeed", 100));
         }
 
-        final IndexCell<WordReference> rwi = indexSegment.termIndex();
+        final IndexCellBackend<WordReference> rwi = indexSegment.termIndex();
         while (threads.hasNext()) {
             threadName = threads.next();
             thread = sb.getThread(threadName);
