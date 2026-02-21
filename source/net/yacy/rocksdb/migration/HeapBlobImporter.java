@@ -19,6 +19,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+import org.rocksdb.RocksDBException;
+
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.kelondro.blob.HeapReader;
 import net.yacy.rocksdb.RocksDBBlobStore;
@@ -84,27 +86,61 @@ public final class HeapBlobImporter {
         long count = 0;
         final long version = blobFile.lastModified();
         long lastProgressTs = System.currentTimeMillis();
+        long lastBatchTs = System.currentTimeMillis();
         HeapReader.entries entries = null;
+        
+        // Batch settings: 50k entries per batch for optimal performance
+        final int batchSize = 50000;
+        final java.util.List<Map.Entry<byte[], byte[]>> batch = new java.util.ArrayList<>(batchSize);
+        
         try {
             entries = new HeapReader.entries(blobFile, keylength);
             for (final Map.Entry<byte[], byte[]> entry : entries) {
-                store.putImportFast(entry.getKey(), entry.getValue(), version);
+                batch.add(entry);
                 count++;
+                
+                // Flush batch when it reaches size limit or every 2 seconds
                 final long now = System.currentTimeMillis();
+                final boolean shouldFlush = batch.size() >= batchSize || (now - lastBatchTs >= 2000L && !batch.isEmpty());
+                
+                if (shouldFlush) {
+                    try {
+                        store.putImportBatch(batch, version);
+                        batch.clear();
+                        lastBatchTs = now;
+                    } catch (final RocksDBException e) {
+                        throw new IOException("Batch import failed: " + e.getMessage(), e);
+                    }
+                }
+                
+                // Progress reporting every 500ms
                 if (now - lastProgressTs >= PROGRESS_UPDATE_MS) {
                     reportProgress(blobFile, fileIndex, fileCount, count, entries.readBytes(), processedBytesBase,
                             totalBytes, globalStart, now, showInplace);
                     lastProgressTs = now;
                 }
             }
+            
+            // Flush remaining entries
+            if (!batch.isEmpty()) {
+                try {
+                    store.putImportBatch(batch, version);
+                    batch.clear();
+                } catch (final RocksDBException e) {
+                    throw new IOException("Final batch import failed: " + e.getMessage(), e);
+                }
+            }
+            
             final long endTs = System.currentTimeMillis();
             reportProgress(blobFile, fileIndex, fileCount, count, entries.readBytes(), processedBytesBase,
                     totalBytes, globalStart, endTs, showInplace);
-            ConcurrentLog.info("HeapBlobImporter", "imported " + count + " entries from " + blobFile.getName());
+            ConcurrentLog.info("HeapBlobImporter", "imported " + count + " entries from " + blobFile.getName() 
+                    + " in batches of " + batchSize);
         } finally {
             if (entries != null) {
                 entries.close();
             }
+            batch.clear();
         }
         return count;
     }
