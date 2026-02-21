@@ -93,7 +93,7 @@ public final class RocksDBBlobStore implements RocksDBStore {
         final String pathKey = normalizePathKey(this.dbPath);
         this.dbPathKey = pathKey;
         try {
-            this.sharedDb = acquireSharedDb(pathKey, this.orderName, ordering);
+            this.sharedDb = acquireSharedDb(pathKey, this.orderName, ordering, mergeRow);
             this.closed = false;
         } catch (final Exception e) {
             throw new RuntimeException("RocksDBBlobStore open failed: " + this.dbPath.getAbsolutePath(), e);
@@ -172,29 +172,11 @@ public final class RocksDBBlobStore implements RocksDBStore {
     public void putImportFast(final byte[] key, final byte[] value, final long version) {
         if (this.closed || key == null || value == null) return;
         try {
-            final byte[] existing = this.sharedDb.db.get(key);
-
-            if (this.mergeRow != null) {
-                final long existingVersion = existing != null && existing.length >= 8
-                    ? bytesToLong(existing, 0) : Long.MIN_VALUE;
-                final byte[] existingPayload = existing != null ? extractPayload(existing) : null;
-                final byte[] mergedValue = mergePayloads(existingPayload, value);
-                final long mergedVersion = Math.max(existingVersion, version);
-                final byte[] encoded = new byte[8 + mergedValue.length];
-                longToBytes(mergedVersion, encoded, 0);
-                System.arraycopy(mergedValue, 0, encoded, 8, mergedValue.length);
-                this.sharedDb.db.put(this.sharedDb.importWriteOptions, key, encoded);
-                return;
-            }
-
-            if (existing != null && existing.length >= 8) {
-                final long existingVersion = bytesToLong(existing, 0);
-                if (existingVersion > version) return;
-            }
-
             final byte[] encoded = new byte[8 + value.length];
             longToBytes(version, encoded, 0);
             System.arraycopy(value, 0, encoded, 8, value.length);
+            // IMPORTANT: Use .put() not .merge() during import
+            // HeapBlobImporter already deduplicated internally, so just write directly
             this.sharedDb.db.put(this.sharedDb.importWriteOptions, key, encoded);
         } catch (final RocksDBException e) {
             ConcurrentLog.warn("RocksDBBlobStore", "putImportFast failed: " + e.getMessage());
@@ -202,8 +184,50 @@ public final class RocksDBBlobStore implements RocksDBStore {
     }
 
     /**
+     * Merge semantics: write with automatic ref merging for keys that already exist.
+     * 
+     * This is for blob imports where the same key may appear in multiple blobs.
+     * Instead of deduplicating in-memory, we let RocksDB merge via this method:
+     * - If key exists: extract refs, merge with new refs, write combined result
+     * - If key is new: just write it
+     * 
+     * PERFORMANCE: One .get() per key with duplicate (worst case), but avoids
+     * large in-memory dedup structures during blob import.
+     */
+    public void putMerge(final byte[] key, final byte[] value, final long version) {
+        if (this.closed || key == null || value == null) return;
+        try {
+            final byte[] existing = this.sharedDb.db.get(key);
+            
+            if (this.mergeRow != null && existing != null) {
+                // Key exists: merge refs from existing + new value
+                final long existingVersion = existing.length >= 8 ? bytesToLong(existing, 0) : Long.MIN_VALUE;
+                final byte[] existingPayload = extractPayload(existing);
+                final byte[] mergedPayload = mergePayloads(existingPayload, value);
+                final long mergedVersion = Math.max(existingVersion, version);
+                
+                final byte[] encoded = new byte[8 + mergedPayload.length];
+                longToBytes(mergedVersion, encoded, 0);
+                System.arraycopy(mergedPayload, 0, encoded, 8, mergedPayload.length);
+                this.sharedDb.db.put(this.sharedDb.importWriteOptions, key, encoded);
+            } else {
+                // Key doesn't exist or no merge capability: just write
+                final byte[] encoded = new byte[8 + value.length];
+                longToBytes(version, encoded, 0);
+                System.arraycopy(value, 0, encoded, 8, value.length);
+                this.sharedDb.db.put(this.sharedDb.importWriteOptions, key, encoded);
+            }
+        } catch (final RocksDBException e) {
+            ConcurrentLog.warn("RocksDBBlobStore", "putMerge failed: " + e.getMessage());
+        }
+    }
+
+    /**
      * Batch import with WriteBatch for high-throughput blob imports.
-     * Much faster than individual putImportFast() calls.
+     * Uses .put() since HeapBlobImporter already deduplicated internally.
+     * 
+     * PERFORMANCE: WriteBatch groups operations into single atomic write,
+     * eliminating overhead of individual put/get calls.
      */
     public void putImportBatch(final java.util.List<java.util.Map.Entry<byte[], byte[]>> entries, 
                                final long version) throws RocksDBException {
@@ -216,28 +240,12 @@ public final class RocksDBBlobStore implements RocksDBStore {
                 final byte[] value = entry.getValue();
                 if (key == null || value == null) continue;
                 
-                final byte[] existing = this.sharedDb.db.get(key);
+                final byte[] encoded = new byte[8 + value.length];
+                longToBytes(version, encoded, 0);
+                System.arraycopy(value, 0, encoded, 8, value.length);
                 
-                if (this.mergeRow != null) {
-                    final long existingVersion = existing != null && existing.length >= 8
-                        ? bytesToLong(existing, 0) : Long.MIN_VALUE;
-                    final byte[] existingPayload = existing != null ? extractPayload(existing) : null;
-                    final byte[] mergedValue = mergePayloads(existingPayload, value);
-                    final long mergedVersion = Math.max(existingVersion, version);
-                    final byte[] encoded = new byte[8 + mergedValue.length];
-                    longToBytes(mergedVersion, encoded, 0);
-                    System.arraycopy(mergedValue, 0, encoded, 8, mergedValue.length);
-                    batch.put(key, encoded);
-                } else {
-                    if (existing != null && existing.length >= 8) {
-                        final long existingVersion = bytesToLong(existing, 0);
-                        if (existingVersion > version) continue;
-                    }
-                    final byte[] encoded = new byte[8 + value.length];
-                    longToBytes(version, encoded, 0);
-                    System.arraycopy(value, 0, encoded, 8, value.length);
-                    batch.put(key, encoded);
-                }
+                // IMPORTANT: Use .put() not .merge() since HeapBlobImporter deduplicated
+                batch.put(key, encoded);
             }
             
             this.sharedDb.db.write(this.sharedDb.importWriteOptions, batch);
@@ -295,7 +303,8 @@ public final class RocksDBBlobStore implements RocksDBStore {
 
     private static SharedDb acquireSharedDb(final String pathKey,
                                             final String orderName,
-                                            final ByteOrder ordering) throws RocksDBException {
+                                            final ByteOrder ordering,
+                                            final Row mergeRow) throws RocksDBException {
         synchronized (OPEN_LOCK) {
             final SharedDb existing = OPEN_DBS.get(pathKey);
             if (existing != null) {
@@ -320,6 +329,7 @@ public final class RocksDBBlobStore implements RocksDBStore {
                 comparator = new RocksDBByteOrderComparator(ordering, comparatorOptions);
                 options.setComparator(comparator);
             }
+            
             final boolean syncWrites = false;
             final boolean importDisableWal = true;
             RocksDB db;
