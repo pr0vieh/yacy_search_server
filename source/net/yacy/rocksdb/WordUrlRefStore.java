@@ -341,6 +341,16 @@ public final class WordUrlRefStore implements AutoCloseable {
                 cleanupDeletedWords();
             }
         }
+        // RocksDB-Optimierung vor dem Schließen
+        try {
+            ConcurrentLog.info("WordUrlRefStore", "RocksDB wird optimiert, bitte warten...");
+            // Komprimiere beide Column Families
+            this.db.compactRange(this.mainCF);
+            this.db.compactRange(this.wordCF);
+            ConcurrentLog.info("WordUrlRefStore", "RocksDB-Optimierung abgeschlossen");
+        } catch (final RocksDBException e) {
+            ConcurrentLog.warn("WordUrlRefStore", "RocksDB-Optimierung fehlgeschlagen, aber fahren mit Shutdown fort: " + e.getMessage());
+        }
         this.mainCF.close();
         this.wordCF.close();
         this.db.close();

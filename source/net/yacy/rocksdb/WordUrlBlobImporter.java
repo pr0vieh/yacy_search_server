@@ -11,7 +11,7 @@ import net.yacy.kelondro.blob.HeapReader;
 
 public final class WordUrlBlobImporter {
 
-    private static final int DEFAULT_BATCH_SIZE = 50_000;
+    private static final int DEFAULT_BATCH_SIZE = 200_000;
 
     private WordUrlBlobImporter() {
     }
