@@ -72,9 +72,12 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
                 return;
             }
 
-            // Import durchführen
+            // Import durchführen mit deaktiviertem WAL für bessere Performance
             ConcurrentLog.info("RocksDBIndexCellBackend", "starting import of " + blobFiles.length 
                 + " Kelondro BLOB files from " + kelondroHeapDir);
+            
+            // Disable WAL during bulk import
+            this.store.setDisableWAL(true);
             
             final long startTime = System.currentTimeMillis();
             final long importedRefs = WordUrlBlobImportJob.importBlobDirectory(
@@ -85,6 +88,9 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
                 50_000
             );
             final long duration = System.currentTimeMillis() - startTime;
+            
+            // Re-enable WAL after import
+            this.store.setDisableWAL(false);
             
             ConcurrentLog.info("RocksDBIndexCellBackend", "imported " + importedRefs 
                 + " references from Kelondro BLOBs in " + (duration / 1000) + "s");
