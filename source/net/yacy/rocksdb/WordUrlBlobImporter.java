@@ -33,10 +33,8 @@ public final class WordUrlBlobImporter {
         long refsWritten = 0L;
         final int actualBatchSize = Math.max(1, batchSize);
         final List<WordUrlRefRecord> batch = new ArrayList<WordUrlRefRecord>(actualBatchSize);
+        final boolean inplace = true;
 
-        final boolean inplace = Boolean.parseBoolean(System.getProperty(
-            "yacy.prefill.progress.inplace",
-            System.getProperty("yacy.index.progress.inplace", "true")));
         final long startTime = System.currentTimeMillis();
         long estimatedBytes = 0L;
         long lastLoggedBytes = 0L;
@@ -80,50 +78,48 @@ public final class WordUrlBlobImporter {
                     final long etaMs = (estimatedBytes > 0 && fileSize > estimatedBytes)
                             ? (long) ((fileSize - estimatedBytes) * (elapsedMs / (double) estimatedBytes))
                             : 0L;
-                    ConcurrentLog.info("WordUrlBlobImporter", "blob import " + String.format("%.1f", pct)
-                            + "% for " + blobFile.getName()
-                            + " (" + recordsRead + " records, "
-                            + String.format("%.1f", mibDone) + "/" + String.format("%.1f", mibTotal) + " MiB, "
-                            + String.format("%.2f", mibPerSec) + " MiB/s, "
-                            + String.format("%.0f", recPerSec) + " rec/s, ETA "
-                            + formatDuration(etaMs) + ")");
+                            ConcurrentLog.info("WordUrlBlobImporter", "blob import " + String.format("%.1f", pct)
+                                + "% for " + blobFile.getName()
+                                + " (" + recordsRead + " records, "
+                                + String.format("%.1f", mibDone) + "/" + String.format("%.1f", mibTotal) + " MiB, "
+                                + String.format("%.2f", mibPerSec) + " MiB/s, "
+                                + String.format("%.0f", recPerSec) + " rec/s, ETA "
+                                + formatDuration(etaMs) + ")");
                     lastLoggedBytes = estimatedBytes;
                     lastLoggedRecords = recordsRead;
                     lastLogTime = now;
                 }
 
                 // In-place progress update
-                if (inplace) {
-                    if (now - lastConsoleTime >= 1000) {
-                        final double pct = fileSize > 0 ? (100.0 * estimatedBytes / fileSize) : 100.0;
-                        final long elapsedMs = Math.max(1L, now - startTime);
-                        final double mibDone = estimatedBytes / 1024.0 / 1024.0;
-                        final double mibTotal = fileSize / 1024.0 / 1024.0;
-                        final double mibPerSec = (estimatedBytes / 1024.0 / 1024.0) / (elapsedMs / 1000.0);
-                        final long etaMs = (estimatedBytes > 0 && fileSize > estimatedBytes)
-                                ? (long) ((fileSize - estimatedBytes) * (elapsedMs / (double) estimatedBytes))
-                                : 0L;
-                        String line = "WordUrlBlobImporter: import " + renderProgressBar(pct, 30)
-                                + " " + String.format("%5.1f", pct) + "%"
-                                + " | " + String.format("%.1f", mibDone) + "/" + String.format("%.1f", mibTotal) + " MiB"
-                                + " | " + String.format("%.2f", mibPerSec) + " MiB/s"
-                                + " | " + recordsRead + " rec"
-                                + " | ETA " + formatDuration(etaMs);
-                        
-                        // Padding if line is shorter
-                        if (line.length() < lastConsoleLine.length()) {
-                            final StringBuilder pad = new StringBuilder(line);
-                            for (int i = line.length(); i < lastConsoleLine.length(); i++) {
-                                pad.append(' ');
-                            }
-                            line = pad.toString();
+                if (inplace && now - lastConsoleTime >= 1000) {
+                    final double pct = fileSize > 0 ? (100.0 * estimatedBytes / fileSize) : 100.0;
+                    final long elapsedMs = Math.max(1L, now - startTime);
+                    final double mibDone = estimatedBytes / 1024.0 / 1024.0;
+                    final double mibTotal = fileSize / 1024.0 / 1024.0;
+                    final double mibPerSec = (estimatedBytes / 1024.0 / 1024.0) / (elapsedMs / 1000.0);
+                    final long etaMs = (estimatedBytes > 0 && fileSize > estimatedBytes)
+                            ? (long) ((fileSize - estimatedBytes) * (elapsedMs / (double) estimatedBytes))
+                            : 0L;
+                    String line = "WordUrlBlobImporter: import " + renderProgressBar(pct, 30)
+                            + " " + String.format("%5.1f", pct) + "%"
+                            + " | " + String.format("%.1f", mibDone) + "/" + String.format("%.1f", mibTotal) + " MiB"
+                            + " | " + String.format("%.2f", mibPerSec) + " MiB/s"
+                            + " | " + recordsRead + " rec"
+                            + " | ETA " + formatDuration(etaMs);
+
+                    // Padding if line is shorter
+                    if (line.length() < lastConsoleLine.length()) {
+                        final StringBuilder pad = new StringBuilder(line);
+                        for (int i = line.length(); i < lastConsoleLine.length(); i++) {
+                            pad.append(' ');
                         }
-                        
-                        System.out.print("\r" + line);
-                        System.out.flush();
-                        lastConsoleLine = line;
-                        lastConsoleTime = now;
+                        line = pad.toString();
                     }
+
+                    System.out.print("\r" + line);
+                    System.out.flush();
+                    lastConsoleLine = line;
+                    lastConsoleTime = now;
                 }
             }
 
@@ -153,7 +149,8 @@ public final class WordUrlBlobImporter {
                     }
                     line = pad.toString();
                 }
-                System.out.println("\r" + line);
+                System.out.print("\r" + line);
+                System.out.print("\n");
                 System.out.flush();
             }
         }
