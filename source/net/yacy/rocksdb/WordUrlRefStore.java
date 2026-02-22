@@ -311,6 +311,11 @@ public final class WordUrlRefStore implements AutoCloseable {
         return out;
     }
 
+    public RocksIterator newWordIterator() {
+        ensureOpen();
+        return this.db.newIterator(this.wordCF, this.readOptions);
+    }
+
     public long distinctWordCount() {
         ensureOpen();
         return estimateNumKeys(this.wordCF);

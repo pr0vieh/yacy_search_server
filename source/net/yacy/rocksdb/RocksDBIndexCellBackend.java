@@ -11,6 +11,8 @@ import java.util.Iterator;
 import java.util.TreeSet;
 import java.util.TreeMap;
 
+import org.rocksdb.RocksIterator;
+
 import net.yacy.cora.order.Base64Order;
 import net.yacy.cora.order.ByteOrder;
 import net.yacy.cora.order.CloneableIterator;
@@ -207,17 +209,12 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
 
     @Override
     public CloneableIterator<Rating<byte[]>> referenceCountIterator(final byte[] startHash, final boolean rot, final boolean excludePrivate) throws IOException {
-        final List<Rating<byte[]>> ratings = new ArrayList<Rating<byte[]>>();
-        for (final Map.Entry<byte[], ReferenceContainer<WordReference>> entry : containersByWord().entrySet()) {
-            ratings.add(new Rating<byte[]>(entry.getKey(), entry.getValue().size()));
-        }
-        return new ListCloneableIterator<Rating<byte[]>>(rotateRatings(ratings, startHash, rot));
+        return new StreamingReferenceCountIterator(startHash, rot);
     }
 
     @Override
     public CloneableIterator<ReferenceContainer<WordReference>> referenceContainerIterator(final byte[] startHash, final boolean rot, final boolean excludePrivate) throws IOException {
-        final List<ReferenceContainer<WordReference>> containers = new ArrayList<ReferenceContainer<WordReference>>(containersByWord().values());
-        return new ListCloneableIterator<ReferenceContainer<WordReference>>(rotateContainers(containers, startHash, rot));
+        return new StreamingReferenceContainerIterator(startHash, rot);
     }
 
     @Override
@@ -379,22 +376,6 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
         return new TermSearch<WordReference>(this, queryHashes, excludeHashes, urlselection, termFactory, maxDistance);
     }
 
-    private TreeMap<byte[], ReferenceContainer<WordReference>> containersByWord() {
-        final TreeMap<byte[], ReferenceContainer<WordReference>> map = new TreeMap<byte[], ReferenceContainer<WordReference>>(this.termOrder);
-        for (final WordUrlRefRecord rec : this.store.scanAll()) {
-            ReferenceContainer<WordReference> container = map.get(rec.wordHash());
-            if (container == null) {
-                container = new ReferenceContainer<WordReference>(this.factory, rec.wordHash());
-                map.put(rec.wordHash(), container);
-            }
-            try {
-                container.add(this.factory.produceSlow(this.factory.getRow().newEntry(rec.meta())));
-            } catch (final SpaceExceededException e) {
-            }
-        }
-        return map;
-    }
-
     private List<Rating<byte[]>> rotateRatings(final List<Rating<byte[]>> source, final byte[] startHash, final boolean rot) {
         if (source.isEmpty()) return source;
         if (startHash == null) return source;
@@ -458,6 +439,118 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
 
         @Override
         public void close() {
+        }
+    }
+
+    private final class StreamingReferenceContainerIterator implements CloneableIterator<ReferenceContainer<WordReference>> {
+        private final RocksIterator iterator;
+        private final byte[] startHash;
+        private final boolean rot;
+        private boolean wrapped;
+        private boolean done;
+
+        private StreamingReferenceContainerIterator(final byte[] startHash, final boolean rot) {
+            this.iterator = store.newWordIterator();
+            this.startHash = startHash == null ? null : startHash.clone();
+            this.rot = rot;
+            this.wrapped = false;
+            this.done = false;
+            if (this.startHash == null) {
+                this.iterator.seekToFirst();
+            } else {
+                this.iterator.seek(this.startHash);
+            }
+            advanceIfNeeded();
+        }
+
+        private void advanceIfNeeded() {
+            if (this.done) return;
+            while (!this.iterator.isValid()) {
+                if (this.rot && !this.wrapped && this.startHash != null) {
+                    this.wrapped = true;
+                    this.iterator.seekToFirst();
+                } else {
+                    this.done = true;
+                    return;
+                }
+            }
+            if (this.wrapped && this.startHash != null) {
+                while (this.iterator.isValid() && termOrder.compare(this.iterator.key(), this.startHash) >= 0) {
+                    this.done = true;
+                    return;
+                }
+            }
+        }
+
+        @Override
+        public boolean hasNext() {
+            advanceIfNeeded();
+            return !this.done && this.iterator.isValid();
+        }
+
+        @Override
+        public ReferenceContainer<WordReference> next() {
+            while (hasNext()) {
+                final byte[] wordHash = this.iterator.key().clone();
+                this.iterator.next();
+                try {
+                    final ReferenceContainer<WordReference> container = get(wordHash, null);
+                    if (container != null && !container.isEmpty()) return container;
+                } catch (final IOException e) {
+                }
+            }
+            return null;
+        }
+
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CloneableIterator<ReferenceContainer<WordReference>> clone(final Object modifier) {
+            return this;
+        }
+
+        @Override
+        public void close() {
+            this.done = true;
+            this.iterator.close();
+        }
+    }
+
+    private final class StreamingReferenceCountIterator implements CloneableIterator<Rating<byte[]>> {
+        private final StreamingReferenceContainerIterator containerIterator;
+
+        private StreamingReferenceCountIterator(final byte[] startHash, final boolean rot) {
+            this.containerIterator = new StreamingReferenceContainerIterator(startHash, rot);
+        }
+
+        @Override
+        public boolean hasNext() {
+            return this.containerIterator.hasNext();
+        }
+
+        @Override
+        public Rating<byte[]> next() {
+            final ReferenceContainer<WordReference> container = this.containerIterator.next();
+            if (container == null) return null;
+            return new Rating<byte[]>(container.getTermHash(), container.size());
+        }
+
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CloneableIterator<Rating<byte[]>> clone(final Object modifier) {
+            return this;
+        }
+
+        @Override
+        public void close() {
+            this.containerIterator.close();
         }
     }
 }
