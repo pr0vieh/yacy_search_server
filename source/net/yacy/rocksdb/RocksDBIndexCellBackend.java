@@ -304,7 +304,7 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
 
     @Override
     public int sizesMax() {
-        return (int) Math.min(this.store.size(), Integer.MAX_VALUE);
+        return (int) Math.min(this.store.distinctWordCount(), Integer.MAX_VALUE);
     }
 
     @Override
