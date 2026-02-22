@@ -89,12 +89,14 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
     @SuppressWarnings("resource")
     public RowHandleMap(final int keylength, final ByteOrder objectOrder, final int idxbytes, final File file) throws IOException, SpaceExceededException {
         this(keylength, objectOrder, idxbytes, (int) (file.length() / (keylength + idxbytes)), file.getAbsolutePath());
-        // read the index dump and fill the index
+        // read the index dump and fill the index with optimized batch loading
+        final int recordSize = keylength + idxbytes;
+        final int batchSize = Math.max(8192, (1024 * 1024) / recordSize); // load in batches for better performance
         InputStream is;
         FileInputStream fis = null;
         try {
         	fis = new FileInputStream(file);
-            is = new BufferedInputStream(fis, 1024 * 1024);
+            is = new BufferedInputStream(fis, 4 * 1024 * 1024); // larger buffer for faster I/O
         } catch (final OutOfMemoryError e) {
         	if (fis != null) {
         		/* Reuse if possible the already created FileInputStream */
@@ -105,16 +107,51 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	}
         }
         try {
-        	if (file.getName().endsWith(".gz")) is = new GZIPInputStream(is);
-        	final byte[] a = new byte[keylength + idxbytes];
-        	int c;
-        	Row.Entry entry;
-        	while (true) {
-        		c = is.read(a);
-        		if (c <= 0) break;
-        		entry = this.rowdef.newEntry(a); // may be null if a is not well-formed
-        		if (entry != null) this.index.addUnique(entry);
+            // Support GZIP legacy format, otherwise read raw dump
+            if (file.getName().endsWith(".gz")) {
+                is = new GZIPInputStream(is, 65536);
+            }
+        	
+        	// Use batch loading: read multiple records at once for better performance
+        	byte[] batch = new byte[recordSize * batchSize];
+        	final byte[] a = new byte[recordSize];
+        	int bytesRead;
+            int carry = 0;
+        	long startTime = System.currentTimeMillis();
+        	long recordsLoaded = 0;
+        	
+            while ((bytesRead = is.read(batch, carry, batch.length - carry)) > 0) {
+                final int totalBytes = carry + bytesRead;
+                final int fullRecordBytes = (totalBytes / recordSize) * recordSize;
+
+                // Process only complete records
+                for (int offset = 0; offset < fullRecordBytes; offset += recordSize) {
+        			System.arraycopy(batch, offset, a, 0, recordSize);
+        			Row.Entry entry = this.rowdef.newEntry(a); // may be null if a is not well-formed
+        			if (entry != null) {
+        				this.index.addUnique(entry);
+        				recordsLoaded++;
+        			}
+        		}
+
+                // Preserve incomplete tail bytes for next read
+                carry = totalBytes - fullRecordBytes;
+                if (carry > 0) {
+                    System.arraycopy(batch, fullRecordBytes, batch, 0, carry);
+                }
         	}
+
+            if (carry > 0) {
+                ConcurrentLog.warn("RowHandleMap", "ignored " + carry + " trailing bytes while loading " + file.getName() + " (not a complete record)");
+            }
+        	
+        	long loadTime = System.currentTimeMillis() - startTime;
+        	if (loadTime > 1000) { // only log if it takes more than 1 second
+        		ConcurrentLog.info("RowHandleMap", "loaded " + recordsLoaded + " records from " + file.getName() + " in " + loadTime + "ms (batch size: " + batchSize + ")");
+        	}
+        	
+        	// Explicitly help GC by clearing batch buffer to avoid memory leak with multiple index files
+        	batch = null;
         } finally {
         	is.close();
         }
@@ -134,7 +171,9 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
     }
 
     private static final int spread(final int expectedspace) {
-        return Math.min(WorkflowProcessor.availableCPU, Math.max(WorkflowProcessor.availableCPU, expectedspace / 8000));
+        final int cpu = Math.max(1, WorkflowProcessor.availableCPU);
+        final int estimated = Math.max(1, expectedspace / 8000);
+        return Math.max(1, Math.min(cpu, estimated));
     }
 
     /**
@@ -198,8 +237,21 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         // otherwise we could just write the byte[] from the in kelondroRowSet which would make
         // everything much faster, but this is not an option here.
         final File tmp = new File(file.getParentFile(), file.getName() + ".prt");
+        
+        // Measure iterator creation time
+        long iteratorStart = System.currentTimeMillis();
         final Iterator<Row.Entry> i = this.index.rows(true, null);
+        long iteratorTime = System.currentTimeMillis() - iteratorStart;
+        if (iteratorTime > 100) {
+            ConcurrentLog.info("RowHandleMap", "Iterator creation took " + iteratorTime + "ms");
+        }
+        
     	int c = 0;
+        final int total = this.size();
+        long bytesWritten = 0;
+        long lastLogTime = System.currentTimeMillis();
+        long startTime = lastLogTime;
+        long lastCount = 0;
     	final FileOutputStream fileStream = new FileOutputStream(tmp);
     	OutputStream os = null;
         try {
@@ -208,12 +260,51 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         	} catch (final OutOfMemoryError e) {
         		os = fileStream;
         	}
-        	if (file.getName().endsWith(".gz")) os = new GZIPOutputStream(os, 65536){{def.setLevel(Deflater.BEST_COMPRESSION);}};
+            // Use GZIP only for explicit .gz dumps, default is raw dump
+            if (file.getName().endsWith(".gz")) {
+        	    os = new GZIPOutputStream(os, 65536){{def.setLevel(Deflater.BEST_COMPRESSION);}};
+        	}
+        	
+        	// Batch writing: collect multiple entries to reduce compression overhead
+        	// Use same batch size as read path for consistency
+        	final int recordSize = this.rowdef.objectsize;
+        	final int batchSize = Math.max(8192, (1024 * 1024) / recordSize); // ~1MB batches (minimum 8192 entries)
+        	byte[] batch = new byte[recordSize * batchSize];
+        	int batchCount = 0;
+        	
         	while (i.hasNext()) {
-        		os.write(i.next().bytes());
-        		c++;
+			Row.Entry entry = i.next();
+            entry.writeToArray(batch, batchCount * recordSize); // Zero-copy: write directly to batch buffer
+            batchCount++;
+            c++;
+            bytesWritten += recordSize;
+
+            // Flush batch when full
+            if (batchCount >= batchSize) {
+                os.write(batch, 0, batchCount * recordSize);
+                batchCount = 0;
+            }
+
+            long now = System.currentTimeMillis();
+            if (now - lastLogTime >= 5000) { // Log every 5 seconds instead of 30
+                double pct = total > 0 ? (100.0 * c / total) : 0.0;
+                double elapsedSec = (now - startTime) / 1000.0;
+                double mbPerSec = elapsedSec > 0 ? (bytesWritten / 1024.0 / 1024.0) / elapsedSec : 0.0;
+                double entriesPerSec = (now - lastLogTime) > 0 ? (c - lastCount) * 1000.0 / (now - lastLogTime) : 0.0;
+                ConcurrentLog.info("RowHandleMap", "dumping " + file.getName() + " " + String.format("%.1f", pct) + "% (" + c + "/" + total + "), " + String.format("%.1f", mbPerSec) + " MB/s, " + String.format("%.0f", entriesPerSec) + " entries/s");
+                lastLogTime = now;
+                lastCount = c;
+            }
+        	}
+        	
+        	// Flush remaining batch
+        	if (batchCount > 0) {
+                os.write(batch, 0, batchCount * recordSize);
         	}
         	os.flush();
+        	
+        	// Help GC by clearing batch buffer (same as in read path)
+        	batch = null;
         } finally {
         	try {
         		if(os != null) {
@@ -225,9 +316,29 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
         		}
         	}
         }
-        tmp.renameTo(file);
-        assert file.exists() : file.toString();
-        assert !tmp.exists() : tmp.toString();
+        
+        // Verify temp file exists and rename to final destination
+        if (!tmp.exists()) {
+            throw new IOException("RowHandleMap.dump(): temporary file was not created: " + tmp.getAbsolutePath());
+        }
+        long tmpSize = tmp.length();
+        
+        // If final file exists, delete it first
+        if (file.exists() && !file.delete()) {
+            throw new IOException("RowHandleMap.dump(): could not delete existing file: " + file.getAbsolutePath());
+        }
+        
+        // Rename temp file to final destination
+        if (!tmp.renameTo(file)) {
+            throw new IOException("RowHandleMap.dump(): could not rename temp file " + tmp.getAbsolutePath() + " to " + file.getAbsolutePath());
+        }
+        
+        // Verify final file exists
+        if (!file.exists()) {
+            throw new IOException("RowHandleMap.dump(): final file does not exist after rename: " + file.getAbsolutePath());
+        }
+        
+        ConcurrentLog.info("RowHandleMap", "finished dumping " + file.getName() + ", " + c + " entries, " + (tmpSize / 1024 / 1024) + " MB");
         return c;
     }
 
@@ -437,13 +548,15 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
 
     public final static class initDataConsumer implements Callable<RowHandleMap> {
 
+        private static final int DEFAULT_QUEUE_CAPACITY = 8192;
+
         private final BlockingQueue<entry> cache;
         private final RowHandleMap map;
         private Future<RowHandleMap> result;
 
         public initDataConsumer(final RowHandleMap map) {
             this.map = map;
-            this.cache = new LinkedBlockingQueue<entry>();
+            this.cache = new LinkedBlockingQueue<entry>(DEFAULT_QUEUE_CAPACITY);
         }
 
         protected final void setResult(final Future<RowHandleMap> result) {
@@ -487,6 +600,10 @@ public final class RowHandleMap implements HandleMap, Iterable<Map.Entry<byte[],
          */
         public final RowHandleMap result() throws InterruptedException, ExecutionException {
             return this.result.get();
+        }
+
+        public final boolean isDone() {
+            return this.result != null && this.result.isDone();
         }
 
         @Override

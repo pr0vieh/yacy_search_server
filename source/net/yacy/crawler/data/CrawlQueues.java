@@ -190,6 +190,16 @@ public class CrawlQueues {
     }
 
     /**
+     * Check if URL exists in ANY stack (LOCAL, GLOBAL/LIMIT, REMOTE, NOLOAD).
+     * Use this to prevent re-queueing URLs that are already being crawled or known.
+     * @param hash the URL hash
+     * @return true if URL exists in any stack
+     */
+    public boolean existsInAnyStack(final byte[] hash) {
+        return this.noticeURL.existsInAnyStack(hash);
+    }
+
+    /**
      * count the number of same host names in the worker
      * @param host
      * @return
@@ -271,15 +281,42 @@ public class CrawlQueues {
         final boolean robinsonPrivateCase = (this.sb.isRobinsonMode() &&
                 !this.sb.getConfig(SwitchboardConstants.CLUSTER_MODE, "").equals(SwitchboardConstants.CLUSTER_MODE_PUBLIC_CLUSTER));
 
-        if ((robinsonPrivateCase || this.coreCrawlJobSize() <= 20) && this.limitCrawlJobSize() > 0) {
+        // Shift from global to local queue when local queue is not too full
+        // Target: Keep queue at ~65 jobs for recrawl thread compatibility
+        // Reduced threshold to 65 to keep recrawl thread active (it pauses above 100)
+        if ((robinsonPrivateCase || this.coreCrawlJobSize() <= 65) && this.limitCrawlJobSize() > 0) {
             // move some tasks to the core crawl job so we have something to do
-            final int toshift = Math.min(10, this.limitCrawlJobSize()); // this cannot be a big number because the balancer makes a forced waiting if it cannot balance
-            for (int i = 0; i < toshift; i++) {
-                this.noticeURL.shift(NoticedURL.StackType.GLOBAL, NoticedURL.StackType.LOCAL, this.sb.crawler, this.sb.robots);
+            // Intelligent shift size: more URLs when queue is low, less when approaching target
+            // Depth-1 crawls typically have diverse hosts, so we can shift more without balancer blocking
+            final int coreSize = this.coreCrawlJobSize();
+            final int limitSize = this.limitCrawlJobSize();
+            final int toshift;
+            if (coreSize < 10) {
+                // Queue very low - shift aggressively (up to 40)
+                toshift = Math.min(40, limitSize);
+            } else if (coreSize < 30) {
+                // Queue low - shift moderately (up to 25)
+                toshift = Math.min(25, limitSize);
+            } else if (coreSize < 50) {
+                // Queue below target - shift conservatively (up to 15)
+                toshift = Math.min(15, limitSize);
+            } else if (coreSize < 65) {
+                // Queue near target - shift minimally (up to 8)
+                toshift = Math.min(8, limitSize);
+            } else {
+                // Queue at or above target - shift minimally to avoid overfill (up to 5)
+                toshift = Math.min(5, limitSize);
             }
-            CrawlQueues.log.info("shifted " + toshift + " jobs from global crawl to local crawl (coreCrawlJobSize()=" + this.coreCrawlJobSize() +
-                    ", limitCrawlJobSize()=" + this.limitCrawlJobSize() + ", cluster.mode=" + this.sb.getConfig(SwitchboardConstants.CLUSTER_MODE, "") +
-                    ", robinsonMode=" + ((this.sb.isRobinsonMode()) ? "on" : "off"));
+            
+            if (toshift > 0) {
+                // Use batch shift for better performance (single operation instead of N individual shifts)
+                final int actualShifted = this.noticeURL.shiftBatch(NoticedURL.StackType.GLOBAL, NoticedURL.StackType.LOCAL, toshift, this.sb.crawler, this.sb.robots);
+                if (actualShifted > 0) {
+                    CrawlQueues.log.info("shifted " + actualShifted + " jobs from global crawl to local crawl (coreCrawlJobSize()=" + this.coreCrawlJobSize() +
+                            ", limitCrawlJobSize()=" + this.limitCrawlJobSize() + ", cluster.mode=" + this.sb.getConfig(SwitchboardConstants.CLUSTER_MODE, "") +
+                            ", robinsonMode=" + ((this.sb.isRobinsonMode()) ? "on" : "off"));
+                }
+            }
         }
 
         final String queueCheckCore = this.loadIsPossible(NoticedURL.StackType.LOCAL);
@@ -805,7 +842,11 @@ public class CrawlQueues {
                     profile = null;
                 }
             } catch (InterruptedException e2) {
-                ConcurrentLog.logException(e2);
+                // Shutdown uses interrupt to wake the loader thread.
+                Thread.currentThread().interrupt();
+                if (CrawlQueues.log.isFine()) {
+                    CrawlQueues.log.fine("Loader interrupted, exiting.");
+                }
             }
         }
     }
