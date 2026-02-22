@@ -20,6 +20,8 @@ import org.rocksdb.RocksIterator;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
+import net.yacy.cora.util.ConcurrentLog;
+
 public final class WordUrlRefStore implements AutoCloseable {
 
     static {
@@ -74,7 +76,7 @@ public final class WordUrlRefStore implements AutoCloseable {
         this.dbOptions = new DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true);
         this.cfOptions = new ColumnFamilyOptions();
         this.readOptions = new ReadOptions();
-        this.writeOptions = new WriteOptions();
+        this.writeOptions = new WriteOptions().setDisableWAL(false);
         this.deletedWords = new HashSet<ByteArray>();
 
         try {
@@ -96,6 +98,20 @@ public final class WordUrlRefStore implements AutoCloseable {
             throw new IllegalStateException("cannot open rocksdb: " + dbPath.getAbsolutePath(), e);
         }
         this.closed = false;
+    }
+
+    /**
+     * Kontrolliert die WAL-Aktivierung. Beim Bulk-Import sollte WAL deaktiviert sein
+     * für bessere Performance. Nach dem Import sollte WAL wieder aktiviert sein.
+     *
+     * @param disable true = WAL wird deaktiviert, false = WAL wird aktiviert
+     */
+    public synchronized void setDisableWAL(final boolean disable) {
+        if (this.writeOptions != null) {
+            this.writeOptions.setDisableWAL(disable);
+            final String status = disable ? "DISABLED" : "ENABLED";
+            ConcurrentLog.info("WordUrlRefStore", "WAL " + status + " for " + this.dbPath.getName());
+        }
     }
 
     public void upsert(final byte[] wordHash, final byte[] urlHash, final byte[] meta) {
