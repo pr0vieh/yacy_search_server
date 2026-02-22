@@ -5,7 +5,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
 import java.util.Set;
 
 import org.rocksdb.ColumnFamilyDescriptor;
@@ -30,6 +32,7 @@ public final class WordUrlRefStore implements AutoCloseable {
 
     private static final byte[] EMPTY_VALUE = new byte[0];
     private static final int CLEANUP_THRESHOLD = 1000; // Cleanup nach 1000 gelöschten URLs
+    private static final int WRITE_BUFFER_SIZE = 1000; // Batch nach 1000 Upserts
 
     private final File dbPath;
     private final DBOptions dbOptions;
@@ -40,7 +43,23 @@ public final class WordUrlRefStore implements AutoCloseable {
     private final ColumnFamilyHandle mainCF;  // wordhash+urlhash -> meta
     private final ColumnFamilyHandle wordCF;  // wordhash -> empty (nur Keys für Zählung)
     private final Set<ByteArray> deletedWords; // Verzögerte Word-Cleanups
+    private final Queue<UpsertRecord> writeBuffer; // Input buffering für Batching
     private volatile boolean closed;
+
+    /**
+     * Upsert record für batched writes
+     */
+    private static class UpsertRecord {
+        final byte[] wordHash;
+        final byte[] urlHash;
+        final byte[] meta;
+
+        UpsertRecord(final byte[] wordHash, final byte[] urlHash, final byte[] meta) {
+            this.wordHash = wordHash;
+            this.urlHash = urlHash;
+            this.meta = meta;
+        }
+    }
 
     private static class ByteArray {
         private final byte[] data;
@@ -78,6 +97,7 @@ public final class WordUrlRefStore implements AutoCloseable {
         this.readOptions = new ReadOptions();
         this.writeOptions = new WriteOptions().setDisableWAL(false);
         this.deletedWords = new HashSet<ByteArray>();
+        this.writeBuffer = new LinkedList<UpsertRecord>();
 
         try {
             // Column Family Descriptors: default + words
@@ -119,15 +139,31 @@ public final class WordUrlRefStore implements AutoCloseable {
         if (meta == null || meta.length != RefMetaCodec.REF_SIZE) {
             throw new IllegalArgumentException("meta must be 40 bytes");
         }
+        synchronized (this.writeBuffer) {
+            this.writeBuffer.offer(new UpsertRecord(wordHash.clone(), urlHash.clone(), meta.clone()));
+            if (this.writeBuffer.size() >= WRITE_BUFFER_SIZE) {
+                flushWriteBuffer();
+            }
+        }
+    }
+
+    /**
+     * Flush buffered write records to RocksDB using batched WriteBatch
+     */
+    private void flushWriteBuffer() {
+        if (this.writeBuffer.isEmpty()) return;
+        
         try (final WriteBatch batch = new WriteBatch()) {
-            final byte[] compositeKey = WordUrlKeyCodec.compose(wordHash, urlHash);
-            // Main CF: wordhash+urlhash -> meta
-            batch.put(this.mainCF, compositeKey, meta.clone());
-            // Word CF: wordhash -> empty (nur zum Zählen)
-            batch.put(this.wordCF, wordHash.clone(), EMPTY_VALUE);
+            while (!this.writeBuffer.isEmpty()) {
+                final UpsertRecord rec = this.writeBuffer.poll();
+                if (rec == null) continue;
+                final byte[] compositeKey = WordUrlKeyCodec.compose(rec.wordHash, rec.urlHash);
+                batch.put(this.mainCF, compositeKey, rec.meta);
+                batch.put(this.wordCF, rec.wordHash, EMPTY_VALUE);
+            }
             this.db.write(this.writeOptions, batch);
         } catch (final RocksDBException e) {
-            throw new IllegalStateException("rocksdb put failed", e);
+            throw new IllegalStateException("rocksdb batch flush failed", e);
         }
     }
 
@@ -335,6 +371,12 @@ public final class WordUrlRefStore implements AutoCloseable {
     public void close() throws IOException {
         if (this.closed) return;
         this.closed = true;
+        // Flush any buffered writes before shutdown
+        synchronized (this.writeBuffer) {
+            if (!this.writeBuffer.isEmpty()) {
+                flushWriteBuffer();
+            }
+        }
         // Finales Cleanup ausstehender Word-Deletes
         synchronized (this.deletedWords) {
             if (!this.deletedWords.isEmpty()) {
