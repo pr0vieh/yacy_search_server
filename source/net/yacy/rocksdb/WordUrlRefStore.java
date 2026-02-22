@@ -171,6 +171,12 @@ public final class WordUrlRefStore implements AutoCloseable {
         ensureOpen();
         if (records == null || records.isEmpty()) return;
 
+        synchronized (this.writeBuffer) {
+            if (!this.writeBuffer.isEmpty()) {
+                flushWriteBuffer();
+            }
+        }
+
         try (final WriteBatch batch = new WriteBatch()) {
             for (final WordUrlRefRecord record : records) {
                 if (record == null) continue;

@@ -108,9 +108,15 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
         if (newEntries == null) return;
         final byte[] wordHash = newEntries.getTermHash();
         final Iterator<WordReference> iterator = newEntries.entries();
+        final List<WordUrlRefRecord> records = new ArrayList<WordUrlRefRecord>();
         while (iterator.hasNext()) {
-            add(wordHash, iterator.next());
+            final WordReference entry = iterator.next();
+            if (entry == null) continue;
+            final byte[] urlHash = entry.urlhash();
+            final byte[] meta = entry.toKelondroEntry().bytes();
+            records.add(new WordUrlRefRecord(wordHash, urlHash, meta));
         }
+        this.store.upsertBatch(records);
     }
 
     @Override
