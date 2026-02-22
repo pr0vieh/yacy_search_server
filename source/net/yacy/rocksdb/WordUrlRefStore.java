@@ -269,14 +269,14 @@ public final class WordUrlRefStore implements AutoCloseable {
         return out;
     }
 
-    public int distinctWordCount() {
+    public long distinctWordCount() {
         ensureOpen();
-        return (int) estimateNumKeys(this.wordCF);
+        return estimateNumKeys(this.wordCF);
     }
 
-    public int size() {
+    public long size() {
         ensureOpen();
-        return (int) estimateNumKeys(this.mainCF);
+        return estimateNumKeys(this.mainCF);
     }
 
     public boolean isEmpty() {
