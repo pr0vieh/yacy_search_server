@@ -44,6 +44,7 @@ public final class WordUrlRefStore implements AutoCloseable {
     private static final byte[] EMPTY_VALUE = new byte[0];
     private static final int CLEANUP_THRESHOLD = 1000; // Cleanup nach 1000 gelöschten URLs
     private static final int MAX_RAM_ENTRIES = 50000; // Max unique words im RAM Cache (wie alte IndexCell)
+    private static final int MAX_RAM_REFERENCES = Integer.getInteger("index.rocksdb.maxRamReferences", 10_000_000); // Max total URL references
     private static final long RAM_FLUSH_INTERVAL = 60000; // Flush alle 60 Sekunden wenn nicht leer
         private static final int MAX_WRITTEN_WORDS_CACHE = Math.max(10_000,
             Integer.getInteger("index.rocksdb.writtenWordsCacheSize", 200_000));
@@ -169,8 +170,9 @@ public final class WordUrlRefStore implements AutoCloseable {
                 + ", writeBufferMB=" + Math.max(16L, writeBufferMB)
                 + ", maxWriteBufferNumber=" + Math.max(2, maxWriteBufferNumber)
                 + ", maxBackgroundJobs=" + Math.max(2, maxBackgroundJobs)
-            + ", maxRamEntries=" + MAX_RAM_ENTRIES
-            + ", writtenWordsCacheSize=" + MAX_WRITTEN_WORDS_CACHE);
+                + ", maxRamEntries=" + MAX_RAM_ENTRIES
+                + ", maxRamReferences=" + MAX_RAM_REFERENCES
+                + ", writtenWordsCacheSize=" + MAX_WRITTEN_WORDS_CACHE);
     }
     
     /**
@@ -196,15 +198,17 @@ public final class WordUrlRefStore implements AutoCloseable {
     private void checkRamCacheFlush() {
         final long now = System.currentTimeMillis();
         final int ramSize = ramCache.size();
+        final int ramRefs = totalRamReferences;
         
         // Update EventTracker für Grafik (wie alte IndexCell)
         EventTracker.update(EventTracker.EClass.WORDCACHE, Long.valueOf(ramSize), true);
         
-        // Flush wenn Cache voll oder Zeit-Limit überschritten
+        // Flush wenn Cache voll (words ODER references) oder Zeit-Limit überschritten
         if (ramSize >= MAX_RAM_ENTRIES || 
+            ramRefs >= MAX_RAM_REFERENCES ||
             (ramSize > 0 && (now - lastRamFlush) > RAM_FLUSH_INTERVAL)) {
             
-            ConcurrentLog.info("WordUrlRefStore", "Flushing RAM cache: " + ramSize + " words, " + totalRamReferences + " references");
+            ConcurrentLog.info("WordUrlRefStore", "Flushing RAM cache: " + ramSize + " words, " + ramRefs + " references");
             flushRamCache();
         }
     }
