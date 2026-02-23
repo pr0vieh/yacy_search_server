@@ -430,6 +430,4 @@ public final class ReferenceContainerArray<ReferenceType extends Reference> {
         merger.merge(ff, null, this.factory, this.array, newContainerBLOBFile());
         return true;
     }
-
-    // No explicit splitting of oversized BLOBs; rely on merge thresholds
 }

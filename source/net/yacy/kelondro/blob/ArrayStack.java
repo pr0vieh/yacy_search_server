@@ -207,23 +207,13 @@ public class ArrayStack implements BLOB {
                            oneBlob = new Heap(f, keylength, ordering, buffersize);
                        } else {
                            oneBlob = new HeapModifier(f, keylength, ordering);
-                           if (oneBlob instanceof HeapReader) {
-                               final HeapReader heapReader = (HeapReader) oneBlob;
-                               if (heapReader.isIndexLoadedFromDump()) {
-                                   // Dump already exists; avoid unload/regen churn on startup.
-                                   heapReader.optimize();
-                               } else {
-                                   // No valid dump was found; optimize and unload after rebuild.
-                                   heapReader.optimizeWithUnload();
-                               }
-                           } else {
-                               oneBlob.optimize(); // fallback for other BLOB types
-                           }
+                           oneBlob.optimize(); // no writings here, can be used with minimum memory
                        }
                        sortedItems.put(Long.valueOf(time), new blobItem(d, f, oneBlob));
                    } catch (final IOException e) {
                        if (deleteonfail) {
-                           ConcurrentLog.warn("KELONDRO", "ArrayStack: cannot read file " + f.getName() + ", keeping it (no delete; will skip for now). Cause: " + e.getMessage());
+                           ConcurrentLog.warn("KELONDRO", "ArrayStack: cannot read file " + f.getName() + ", deleting it (smart fail; alternative would be: crash; required user action would be same as deletion)");
+                           f.delete();
                        } else {
                            throw new IOException(e.getMessage(), e);
                        }
@@ -261,9 +251,6 @@ public class ArrayStack implements BLOB {
      * @throws IOException
      */
     public synchronized void mountBLOB(final File location, final boolean full) throws IOException {
-        if (this.blobs == null) {
-            throw new IOException("ArrayStack is closed and cannot mount new BLOBs");
-        }
         Date d;
         try {
             d = my_SHORT_MILSEC_FORMATTER.parse(location.getName().substring(this.prefix.length() + 1, this.prefix.length() + 18), 0).getTime();
@@ -345,12 +332,6 @@ public class ArrayStack implements BLOB {
         unmountBLOB(f, false);
         return f;
     }
-
-    /**
-     * Unmount and return the first BLOB file found that exceeds the given max size.
-     * Returns null when no such file exists.
-     */
-    // No explicit unmount by size; use existing smallest/matching policies
 
     public synchronized File[] unmountSmallest(final long maxResultSize) {
     	if (this.blobs.size() < 2) return null;
@@ -1073,8 +1054,6 @@ public class ArrayStack implements BLOB {
         FileUtils.deletedelete(f);
         return newFile;
     }
-
-    // No explicit splitting; large BLOBs will be reduced via merge processes
 
     private static <ReferenceType extends Reference> void merge(
             final CloneableIterator<ReferenceContainer<ReferenceType>> i1,

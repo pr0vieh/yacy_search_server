@@ -30,7 +30,6 @@ package net.yacy.crawler.data;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -175,20 +174,6 @@ public class NoticedURL {
     }
 
     /**
-     * Check if a URL exists in ANY stack (LOCAL, GLOBAL/LIMIT, REMOTE, NOLOAD).
-     * Use this to prevent re-crawling URLs that are already known in any queue or being processed.
-     * @param urlhashb the URL hash
-     * @return true if the URL exists in any stack
-     */
-    protected boolean existsInAnyStack(final byte[] urlhashb) {
-        return
-            this.coreStack.has(urlhashb) ||
-            this.limitStack.has(urlhashb) ||
-            (this.remoteStack != null && this.remoteStack.has(urlhashb)) ||
-            this.noloadStack.has(urlhashb);
-    }
-
-    /**
      * push a crawl request on one of the different crawl stacks
      * @param stackType
      * @param entry
@@ -315,142 +300,6 @@ public class NoticedURL {
         } catch (final IOException e) {
             return;
         }
-    }
-
-    /**
-     * Helper to get the Balancer for a given StackType
-     * @param stackType the stack type
-     * @return the corresponding balancer
-     */
-    private Balancer getBalancer(final StackType stackType) {
-        switch (stackType) {
-            case LOCAL:     return this.coreStack;
-            case GLOBAL:    return this.limitStack;
-            case REMOTE:    return this.remoteStack;
-            case NOLOAD:    return this.noloadStack;
-            default:        return null;
-        }
-    }
-
-    /**
-     * Batch shift multiple entries from one stack to another in one operation.
-     * More efficient than calling shift() multiple times as it reduces I/O operations.
-     * Optimized to prefer diverse domains: distributes shifts across different hosts
-     * to improve parallelization and reduce robots.txt blocking.
-     * @param fromStack source stack
-     * @param toStack destination stack
-     * @param count maximum number of entries to shift
-     * @param cs crawl switchboard
-     * @param robots robots.txt handler
-     * @return actual number of entries shifted
-     */
-    protected int shiftBatch(final StackType fromStack, final StackType toStack, final int count, final CrawlSwitchboard cs, final RobotsTxt robots) {
-        if (count <= 0) return 0;
-        int shifted = 0;
-        try {
-            // Get domain distribution to prefer diverse hosts when shifting
-            final Map<String, Integer[]> domainHosts = this.getDomainStackHosts(fromStack, robots);
-            
-            // For domain-diverse shifting: cycle through domains rather than just popping sequentially
-            // This prevents situations where we shift many URLs from the same domain
-            if (domainHosts.size() > 1) {
-                final List<String> hosts = new ArrayList<>(domainHosts.keySet());
-                int hostIndex = 0;
-                final int maxAttempts = count * 3; // prevent infinite loops on small stacks
-                int attempts = 0;
-                
-                // Cycle through different hosts to get diverse URLs
-                while (shifted < count && attempts < maxAttempts) {
-                    attempts++;
-                    final String host = hosts.get(hostIndex % hosts.size());
-                    hostIndex++;
-                    
-                    // Try to get a URL from this host
-                    final List<Request> hostUrls = this.getDomainStackReferences(fromStack, host, 1, Long.MAX_VALUE);
-                    if (!hostUrls.isEmpty()) {
-                        final Request entry = hostUrls.get(0);
-                        final byte[] urlhash = entry.url().hash();
-                        
-                        // Remove this specific entry from source stack (not just any via pop())
-                        final Balancer fromBalancer = this.getBalancer(fromStack);
-                        if (fromBalancer != null) {
-                            try {
-                                final HandleSet urlHashes = new RowHandleSet(Word.commonHashLength, Base64Order.enhancedCoder, 1);
-                                urlHashes.put(urlhash);
-                                final int removed = fromBalancer.remove(urlHashes);
-                                if (removed > 0) {
-                                    final String warning = this.push(toStack, entry, null, robots);
-                                    if (warning != null) {
-                                        ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
-                                        // Push failed (e.g., double occurrence) - restore URL to fromStack to prevent data loss
-                                        try {
-                                            final String restoreWarning = this.push(fromStack, entry, null, robots);
-                                            if (restoreWarning != null) {
-                                                ConcurrentLog.warn("NoticedURL", "shiftBatch: failed to restore entry to " + fromStack + ": " + restoreWarning);
-                                            }
-                                        } catch (final Exception e) {
-                                            ConcurrentLog.warn("NoticedURL", "shiftBatch: exception restoring entry: " + e.getMessage());
-                                        }
-                                    } else {
-                                        // Only count as shifted if push was successful
-                                        shifted++;
-                                    }
-                                }
-                            } catch (final IOException | SpaceExceededException e) {
-                                ConcurrentLog.warn("NoticedURL", "shiftBatch could not remove entry: " + e.getMessage());
-                            }
-                        }
-                    }
-                }
-                
-                // Fall back to simple sequential shifting if domain-diverse approach doesn't yield enough
-                while (shifted < count) {
-                    final Request entry = this.pop(fromStack, false, cs, robots);
-                    if (entry == null) break;
-                    final String warning = this.push(toStack, entry, null, robots);
-                    if (warning != null) {
-                        ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
-                        // Push failed - restore URL to fromStack to prevent data loss
-                        try {
-                            final String restoreWarning = this.push(fromStack, entry, null, robots);
-                            if (restoreWarning != null) {
-                                ConcurrentLog.warn("NoticedURL", "shiftBatch: failed to restore entry to " + fromStack + ": " + restoreWarning);
-                            }
-                        } catch (final Exception e) {
-                            ConcurrentLog.warn("NoticedURL", "shiftBatch: exception restoring entry: " + e.getMessage());
-                        }
-                    } else {
-                        // Only count as shifted if push was successful
-                        shifted++;
-                    }
-                }
-            } else {
-                // Only one domain or empty - just shift sequentially
-                for (int i = 0; i < count; i++) {
-                    final Request entry = this.pop(fromStack, false, cs, robots);
-                    if (entry == null) break;
-                    final String warning = this.push(toStack, entry, null, robots);
-                    if (warning != null) {
-                        ConcurrentLog.warn("NoticedURL", "shiftBatch from " + fromStack + " to " + toStack + ": " + warning);
-                        // Push failed - restore URL to fromStack to prevent data loss
-                        try {
-                            final String restoreWarning = this.push(fromStack, entry, null, robots);
-                            if (restoreWarning != null) {
-                                ConcurrentLog.warn("NoticedURL", "shiftBatch: failed to restore entry to " + fromStack + ": " + restoreWarning);
-                            }
-                        } catch (final Exception e) {
-                            ConcurrentLog.warn("NoticedURL", "shiftBatch: exception restoring entry: " + e.getMessage());
-                        }
-                    } else {
-                        // Only count as shifted if push was successful
-                        shifted++;
-                    }
-                }
-            }
-        } catch (final IOException e) {
-            ConcurrentLog.warn("NoticedURL", "shiftBatch interrupted after " + shifted + " entries: " + e.getMessage());
-        }
-        return shifted;
     }
 
     public void clear(final StackType stackType) {
