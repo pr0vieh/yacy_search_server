@@ -553,4 +553,20 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
             this.containerIterator.close();
         }
     }
+    
+    /**
+     * Anzahl Words im RAM cache (für Status-Seite)
+     * @return Anzahl unique words im indexing cache
+     */
+    public int wordsInCache() {
+        return this.store.wordsInCache();
+    }
+    
+    /**
+     * Anzahl References im RAM cache (für Status-Seite)
+     * @return Gesamtanzahl URL references im indexing cache
+     */
+    public int referencesInCache() {
+        return this.store.referencesInCache();
+    }
 }

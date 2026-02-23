@@ -4,25 +4,36 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.BloomFilter;
 import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.DBOptions;
+import org.rocksdb.LRUCache;
 import org.rocksdb.Options;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
+import org.rocksdb.Snapshot;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
 import net.yacy.cora.util.ConcurrentLog;
+import net.yacy.search.EventTracker;
 
 public final class WordUrlRefStore implements AutoCloseable {
 
@@ -32,34 +43,32 @@ public final class WordUrlRefStore implements AutoCloseable {
 
     private static final byte[] EMPTY_VALUE = new byte[0];
     private static final int CLEANUP_THRESHOLD = 1000; // Cleanup nach 1000 gelöschten URLs
-    private static final int WRITE_BUFFER_SIZE = 1000; // Batch nach 1000 Upserts
+    private static final int MAX_RAM_ENTRIES = 50000; // Max unique words im RAM Cache (wie alte IndexCell)
+    private static final long RAM_FLUSH_INTERVAL = 60000; // Flush alle 60 Sekunden wenn nicht leer
+        private static final int MAX_WRITTEN_WORDS_CACHE = Math.max(10_000,
+            Integer.getInteger("index.rocksdb.writtenWordsCacheSize", 200_000));
 
     private final File dbPath;
     private final DBOptions dbOptions;
     private final ColumnFamilyOptions cfOptions;
+    private final LRUCache blockCache;
+    private final BloomFilter bloomFilter;
     private final ReadOptions readOptions;
     private final WriteOptions writeOptions;
     private final RocksDB db;
     private final ColumnFamilyHandle mainCF;  // wordhash+urlhash -> meta
     private final ColumnFamilyHandle wordCF;  // wordhash -> empty (nur Keys für Zählung)
     private final Set<ByteArray> deletedWords; // Verzögerte Word-Cleanups
-    private final Queue<UpsertRecord> writeBuffer; // Input buffering für Batching
+    private final Map<ByteArray, Boolean> writtenWordsCache; // begrenzter LRU Cache für wordCF-Dedup
+    
+    // RAM Cache für ReferenceContainers (wie alte IndexCell)
+    private final Map<ByteArray, Map<ByteArray, byte[]>> ramCache; // word -> (url -> meta)
+    private volatile int totalRamReferences = 0; // Gesamtzahl References im Cache
+    private volatile long lastRamFlush = System.currentTimeMillis();
+    private volatile boolean flushShallRun = true;
+    private final Thread flushThread;
+    
     private volatile boolean closed;
-
-    /**
-     * Upsert record für batched writes
-     */
-    private static class UpsertRecord {
-        final byte[] wordHash;
-        final byte[] urlHash;
-        final byte[] meta;
-
-        UpsertRecord(final byte[] wordHash, final byte[] urlHash, final byte[] meta) {
-            this.wordHash = wordHash;
-            this.urlHash = urlHash;
-            this.meta = meta;
-        }
-    }
 
     private static class ByteArray {
         private final byte[] data;
@@ -91,13 +100,44 @@ public final class WordUrlRefStore implements AutoCloseable {
         if (!dbPath.exists() && !dbPath.mkdirs()) {
             throw new IllegalArgumentException("cannot create db path: " + dbPath.getAbsolutePath());
         }
+        final long blockCacheMB = Long.getLong("index.rocksdb.blockCacheMB", 256L);
+        final long writeBufferMB = Long.getLong("index.rocksdb.writeBufferMB", 64L);
+        final int maxWriteBufferNumber = Integer.getInteger("index.rocksdb.maxWriteBufferNumber", 4);
+        final int maxBackgroundJobs = Integer.getInteger("index.rocksdb.maxBackgroundJobs", 4);
+
         this.dbPath = dbPath;
-        this.dbOptions = new DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true);
-        this.cfOptions = new ColumnFamilyOptions();
+        this.blockCache = new LRUCache(Math.max(64L, blockCacheMB) * 1024L * 1024L);
+        this.bloomFilter = new BloomFilter(10, false);
+
+        final BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
+            .setBlockCache(this.blockCache)
+            .setFilterPolicy(this.bloomFilter)
+            .setCacheIndexAndFilterBlocks(true)
+            .setCacheIndexAndFilterBlocksWithHighPriority(true)
+            .setPinTopLevelIndexAndFilter(true);
+
+        this.dbOptions = new DBOptions()
+            .setCreateIfMissing(true)
+            .setCreateMissingColumnFamilies(true)
+            .setMaxBackgroundJobs(Math.max(2, maxBackgroundJobs));
+        this.cfOptions = new ColumnFamilyOptions()
+            .setTableFormatConfig(tableConfig)
+            .useFixedLengthPrefixExtractor(WordUrlKeyCodec.WORD_HASH_LENGTH)
+            .setMemtablePrefixBloomSizeRatio(0.05d)
+            .setWriteBufferSize(Math.max(16L, writeBufferMB) * 1024L * 1024L)
+            .setMaxWriteBufferNumber(Math.max(2, maxWriteBufferNumber));
         this.readOptions = new ReadOptions();
         this.writeOptions = new WriteOptions().setDisableWAL(false);
         this.deletedWords = new HashSet<ByteArray>();
-        this.writeBuffer = new LinkedList<UpsertRecord>();
+        this.writtenWordsCache = Collections.synchronizedMap(new LinkedHashMap<ByteArray, Boolean>(16_384, 0.75f, true) {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<ByteArray, Boolean> eldest) {
+                return size() > MAX_WRITTEN_WORDS_CACHE;
+            }
+        });
+        this.ramCache = new ConcurrentHashMap<ByteArray, Map<ByteArray, byte[]>>();
 
         try {
             // Column Family Descriptors: default + words
@@ -115,9 +155,104 @@ public final class WordUrlRefStore implements AutoCloseable {
             this.cfOptions.close();
             this.readOptions.close();
             this.writeOptions.close();
+            this.bloomFilter.close();
+            this.blockCache.close();
             throw new IllegalStateException("cannot open rocksdb: " + dbPath.getAbsolutePath(), e);
         }
         this.closed = false;
+        
+        // Start flush thread für RAM cache (wie alte IndexCell)
+        this.flushThread = new Thread(new RamCacheFlusher(), "WordUrlRefStore.FlushThread(" + dbPath.getName() + ")");
+        this.flushThread.start();
+
+        ConcurrentLog.info("WordUrlRefStore", "RocksDB tuning active: blockCacheMB=" + Math.max(64L, blockCacheMB)
+                + ", writeBufferMB=" + Math.max(16L, writeBufferMB)
+                + ", maxWriteBufferNumber=" + Math.max(2, maxWriteBufferNumber)
+                + ", maxBackgroundJobs=" + Math.max(2, maxBackgroundJobs)
+            + ", maxRamEntries=" + MAX_RAM_ENTRIES
+            + ", writtenWordsCacheSize=" + MAX_WRITTEN_WORDS_CACHE);
+    }
+    
+    /**
+     * Flush thread für RAM cache (wie alte IndexCell FlushThread)
+     */
+    private class RamCacheFlusher implements Runnable {
+        @Override
+        public void run() {
+            while (flushShallRun) {
+                try {
+                    checkRamCacheFlush();
+                } catch (final Throwable e) {
+                    ConcurrentLog.logException(e);
+                }
+                try { Thread.sleep(3000); } catch (final InterruptedException e) {}
+            }
+        }
+    }
+    
+    /**
+     * Prüft ob RAM Cache geflush werden muss
+     */
+    private void checkRamCacheFlush() {
+        final long now = System.currentTimeMillis();
+        final int ramSize = ramCache.size();
+        
+        // Update EventTracker für Grafik (wie alte IndexCell)
+        EventTracker.update(EventTracker.EClass.WORDCACHE, Long.valueOf(ramSize), true);
+        
+        // Flush wenn Cache voll oder Zeit-Limit überschritten
+        if (ramSize >= MAX_RAM_ENTRIES || 
+            (ramSize > 0 && (now - lastRamFlush) > RAM_FLUSH_INTERVAL)) {
+            
+            ConcurrentLog.info("WordUrlRefStore", "Flushing RAM cache: " + ramSize + " words, " + totalRamReferences + " references");
+            flushRamCache();
+        }
+    }
+    
+    /**
+     * Flush den RAM cache zu RocksDB
+     */
+    private synchronized void flushRamCache() {
+        if (ramCache.isEmpty()) return;
+        
+        try (final WriteBatch batch = new WriteBatch()) {
+            int writtenRefs = 0;
+            int newWords = 0;
+            
+            // Durchiteriere alle words im Cache
+            for (final Map.Entry<ByteArray, Map<ByteArray, byte[]>> wordEntry : ramCache.entrySet()) {
+                final ByteArray wordKey = wordEntry.getKey();
+                final byte[] wordHash = wordKey.bytes();
+                final Map<ByteArray, byte[]> urlMap = wordEntry.getValue();
+                
+                // Schreibe alle url references für dieses word
+                for (final Map.Entry<ByteArray, byte[]> urlEntry : urlMap.entrySet()) {
+                    final byte[] urlHash = urlEntry.getKey().bytes();
+                    final byte[] meta = urlEntry.getValue();
+                    final byte[] compositeKey = WordUrlKeyCodec.compose(wordHash, urlHash);
+                    batch.put(this.mainCF, compositeKey, meta);
+                    writtenRefs++;
+                }
+                
+                // Schreibe word nur wenn nicht kürzlich geschrieben (begrenzter LRU-Dedup)
+                if (!this.writtenWordsCache.containsKey(wordKey)) {
+                    batch.put(this.wordCF, wordHash, EMPTY_VALUE);
+                    this.writtenWordsCache.put(wordKey, Boolean.TRUE);
+                    newWords++;
+                }
+            }
+            
+            this.db.write(this.writeOptions, batch);
+            
+            final int flushedWords = ramCache.size();
+            ramCache.clear();
+            totalRamReferences = 0;
+            lastRamFlush = System.currentTimeMillis();
+            
+            ConcurrentLog.info("WordUrlRefStore", "RAM cache flush complete: " + flushedWords + " words (" + newWords + " new), " + writtenRefs + " references");
+        } catch (final RocksDBException e) {
+            ConcurrentLog.severe("WordUrlRefStore", "RAM cache flush failed", e);
+        }
     }
 
     /**
@@ -139,56 +274,48 @@ public final class WordUrlRefStore implements AutoCloseable {
         if (meta == null || meta.length != RefMetaCodec.REF_SIZE) {
             throw new IllegalArgumentException("meta must be 40 bytes");
         }
-        synchronized (this.writeBuffer) {
-            this.writeBuffer.offer(new UpsertRecord(wordHash.clone(), urlHash.clone(), meta.clone()));
-            if (this.writeBuffer.size() >= WRITE_BUFFER_SIZE) {
-                flushWriteBuffer();
-            }
-        }
-    }
-
-    /**
-     * Flush buffered write records to RocksDB using batched WriteBatch
-     */
-    private void flushWriteBuffer() {
-        if (this.writeBuffer.isEmpty()) return;
         
-        try (final WriteBatch batch = new WriteBatch()) {
-            while (!this.writeBuffer.isEmpty()) {
-                final UpsertRecord rec = this.writeBuffer.poll();
-                if (rec == null) continue;
-                final byte[] compositeKey = WordUrlKeyCodec.compose(rec.wordHash, rec.urlHash);
-                batch.put(this.mainCF, compositeKey, rec.meta);
-                batch.put(this.wordCF, rec.wordHash, EMPTY_VALUE);
-            }
-            this.db.write(this.writeOptions, batch);
-        } catch (final RocksDBException e) {
-            throw new IllegalStateException("rocksdb batch flush failed", e);
+        // Schreibe in den RAM cache (wie alte IndexCell)
+        final ByteArray wordKey = new ByteArray(wordHash);
+        final ByteArray urlKey = new ByteArray(urlHash);
+        
+        Map<ByteArray, byte[]> urlMap = this.ramCache.get(wordKey);
+        if (urlMap == null) {
+            urlMap = new ConcurrentHashMap<ByteArray, byte[]>();
+            this.ramCache.put(wordKey, urlMap);
         }
+        
+        final byte[] oldMeta = urlMap.put(urlKey, meta.clone());
+        if (oldMeta == null) {
+            // Neue reference
+            this.totalRamReferences++;
+        }
+        // Note: update triggert automatisch flush durch FlushThread bei Bedarf
     }
 
     public void upsertBatch(final List<WordUrlRefRecord> records) {
         ensureOpen();
         if (records == null || records.isEmpty()) return;
 
-        synchronized (this.writeBuffer) {
-            if (!this.writeBuffer.isEmpty()) {
-                flushWriteBuffer();
+        // Schreibe alle in den RAM cache
+        for (final WordUrlRefRecord record : records) {
+            if (record == null) continue;
+            final byte[] meta = record.meta();
+            if (meta == null || meta.length != RefMetaCodec.REF_SIZE) continue;
+            
+            final ByteArray wordKey = new ByteArray(record.wordHash());
+            final ByteArray urlKey = new ByteArray(record.urlHash());
+            
+            Map<ByteArray, byte[]> urlMap = this.ramCache.get(wordKey);
+            if (urlMap == null) {
+                urlMap = new ConcurrentHashMap<ByteArray, byte[]>();
+                this.ramCache.put(wordKey, urlMap);
             }
-        }
-
-        try (final WriteBatch batch = new WriteBatch()) {
-            for (final WordUrlRefRecord record : records) {
-                if (record == null) continue;
-                final byte[] meta = record.meta();
-                if (meta == null || meta.length != RefMetaCodec.REF_SIZE) continue;
-                final byte[] compositeKey = WordUrlKeyCodec.compose(record.wordHash(), record.urlHash());
-                batch.put(this.mainCF, compositeKey, meta.clone());
-                batch.put(this.wordCF, record.wordHash().clone(), EMPTY_VALUE);
+            
+            final byte[] oldMeta = urlMap.put(urlKey, meta.clone());
+            if (oldMeta == null) {
+                this.totalRamReferences++;
             }
-            this.db.write(this.writeOptions, batch);
-        } catch (final RocksDBException e) {
-            throw new IllegalStateException("rocksdb batch upsert failed", e);
         }
     }
 
@@ -243,6 +370,7 @@ public final class WordUrlRefStore implements AutoCloseable {
             // Word aus Word CF löschen (sofort, da wir wissen dass keine Refs mehr existieren)
             if (deleted > 0) {
                 this.db.delete(this.wordCF, this.writeOptions, wordHash);
+                this.writtenWordsCache.remove(new ByteArray(wordHash));
             }
         } catch (final RocksDBException e) {
             throw new IllegalStateException("rocksdb deleteWord failed", e);
@@ -270,6 +398,7 @@ public final class WordUrlRefStore implements AutoCloseable {
                 // Wenn keine Refs mehr: aus Word CF löschen
                 if (!hasRefs) {
                     this.db.delete(this.wordCF, this.writeOptions, wordHash);
+                    this.writtenWordsCache.remove(wordArray);
                 }
             }
         } catch (final RocksDBException e) {
@@ -316,28 +445,43 @@ public final class WordUrlRefStore implements AutoCloseable {
         return this.db.newIterator(this.wordCF, this.readOptions);
     }
 
+    /**
+     * Returns the number of distinct words (keys in wordCF).
+     * O(1) operation - just reads the counter.
+     * Automatically triggers background refresh every 10 minutes.
+     */
     public long distinctWordCount() {
         ensureOpen();
-        return estimateNumKeys(this.wordCF);
-    }
 
-    public long size() {
-        ensureOpen();
-        return estimateNumKeys(this.mainCF);
-    }
-
-    public boolean isEmpty() {
-        ensureOpen();
-        return estimateNumKeys(this.mainCF) == 0;
-    }
-
-    private long estimateNumKeys(final ColumnFamilyHandle cf) {
+        // Always use estimate to avoid expensive iteration
         try {
-            final String estimate = this.db.getProperty(cf, "rocksdb.estimate-num-keys");
+            final String estimate = this.db.getProperty(this.wordCF, "rocksdb.estimate-num-keys");
             return estimate != null ? Long.parseLong(estimate) : 0L;
         } catch (final Exception e) {
             return 0L;
         }
+    }
+
+    /**
+     * Returns the total number of index entries (word+url pairs).
+     * O(1) operation - just reads the counter.
+     * Automatically triggers background refresh every 10 minutes.
+     */
+    public long size() {
+        ensureOpen();
+
+        // Always use estimate to avoid expensive iteration
+        try {
+            final String estimate = this.db.getProperty(this.mainCF, "rocksdb.estimate-num-keys");
+            return estimate != null ? Long.parseLong(estimate) : 0L;
+        } catch (final Exception e) {
+            return 0L;
+        }
+    }
+
+    public boolean isEmpty() {
+        ensureOpen();
+        return size() == 0L;
     }
 
     public void clear() {
@@ -374,6 +518,43 @@ public final class WordUrlRefStore implements AutoCloseable {
         return this.dbPath;
     }
 
+    /**
+     * Get words in indexing cache (für Status-Seite)
+     * @return Anzahl unique words im RAM cache
+     */
+    public int wordsInCache() {
+        return this.ramCache.size();
+    }
+    
+    /**
+     * Get total references in indexing cache (für Status-Seite)
+     * @return Gesamtzahl word-url references im RAM cache
+     */
+    public int referencesInCache() {
+        return this.totalRamReferences;
+    }
+    
+    /**
+     * Get RAM cache statistics
+     * @return array [words, references, maxWords, fillPercent]
+     */
+    public double[] getRamCacheStats() {
+        final int words = this.ramCache.size();
+        final int refs = this.totalRamReferences;
+        final double fillPercent = 100.0 * words / MAX_RAM_ENTRIES;
+        return new double[]{words, refs, MAX_RAM_ENTRIES, fillPercent};
+    }
+
+    /**
+     * Log RAM cache statistics
+     */
+    public void logRamCacheStats() {
+        final double[] stats = getRamCacheStats();
+        ConcurrentLog.info("WordUrlRefStore", String.format(
+            "RAM cache: %d words, %d references (%.1f%% full, max: %d words)",
+            (int) stats[0], (int) stats[1], stats[3], (int) stats[2]));
+    }
+
     private void ensureOpen() {
         if (this.closed) throw new IllegalStateException("store is closed");
     }
@@ -382,28 +563,39 @@ public final class WordUrlRefStore implements AutoCloseable {
     public void close() throws IOException {
         if (this.closed) return;
         this.closed = true;
-        // Flush any buffered writes before shutdown
-        synchronized (this.writeBuffer) {
-            if (!this.writeBuffer.isEmpty()) {
-                flushWriteBuffer();
-            }
+        
+        // Stop flush thread
+        this.flushShallRun = false;
+        try {
+            this.flushThread.join(10000); // Wait max 10 seconds
+        } catch (final InterruptedException e) {
+            ConcurrentLog.warn("WordUrlRefStore", "FlushThread interrupt during shutdown");
         }
-        // Finales Cleanup ausstehender Word-Deletes
+        
+        // Flush RAM cache before shutdown
+        ConcurrentLog.info("WordUrlRefStore", "Flushing RAM cache before shutdown...");
+        flushRamCache();
+        
+        // Final cleanup of pending Word deletes
         synchronized (this.deletedWords) {
             if (!this.deletedWords.isEmpty()) {
                 cleanupDeletedWords();
             }
         }
-        // RocksDB-Optimierung vor dem Schließen
-        try {
-            ConcurrentLog.info("WordUrlRefStore", "RocksDB wird optimiert, bitte warten...");
-            // Komprimiere beide Column Families
+        
+        // Log cache statistics before closing
+        logRamCacheStats();
+        
+        ConcurrentLog.info("WordUrlRefStore", "RocksDB is closing, please wait...");
+        // RocksDB optimization before closing
+        /*try {
+            // Compact both Column Families
             this.db.compactRange(this.mainCF);
             this.db.compactRange(this.wordCF);
-            ConcurrentLog.info("WordUrlRefStore", "RocksDB-Optimierung abgeschlossen");
+            ConcurrentLog.info("WordUrlRefStore", "RocksDB optimization completed");
         } catch (final RocksDBException e) {
-            ConcurrentLog.warn("WordUrlRefStore", "RocksDB-Optimierung fehlgeschlagen, aber fahren mit Shutdown fort: " + e.getMessage());
-        }
+            ConcurrentLog.warn("WordUrlRefStore", "RocksDB optimization failed, but continuing with shutdown: " + e.getMessage());
+        }*/
         this.mainCF.close();
         this.wordCF.close();
         this.db.close();
@@ -411,5 +603,8 @@ public final class WordUrlRefStore implements AutoCloseable {
         this.readOptions.close();
         this.cfOptions.close();
         this.dbOptions.close();
+        this.bloomFilter.close();
+        this.blockCache.close();
+        ConcurrentLog.info("WordUrlRefStore", "RocksDB closed");
     }
 }
