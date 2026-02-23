@@ -75,35 +75,50 @@ public class NoticedURL {
             final int onDemandLimit,
             final boolean exceed134217727) {
         ConcurrentLog.info("NoticedURL", "START CREATING STACKS at " + cachePath.toString());
-        ConcurrentLog.info("NoticedURL", "opening CrawlerCoreStacks..");
         this.cachePath = cachePath;
-        try {
-            // Use RocksDB-based Balancer for better performance (eliminates file open/close overhead)
-            this.coreStack = new net.yacy.rocksdb.RocksDBBalancer(new File(cachePath, "CrawlerCoreStacks"), onDemandLimit, exceed134217727);
-        } catch (final Exception e) {
-            ConcurrentLog.warn("NoticedURL", "Failed to initialize RocksDBBalancer for CrawlerCoreStacks: " + e.getMessage() + ", falling back to HostBalancer");
-            this.coreStack = new HostBalancer(new File(cachePath, "CrawlerCoreStacks"), onDemandLimit, exceed134217727);
-        }
         
-        ConcurrentLog.info("NoticedURL", "opening CrawlerLimitStacks..");
-        try {
-            this.limitStack = new net.yacy.rocksdb.RocksDBBalancer(new File(cachePath, "CrawlerLimitStacks"), onDemandLimit, exceed134217727);
-        } catch (final Exception e) {
-            ConcurrentLog.warn("NoticedURL", "Failed to initialize RocksDBBalancer for CrawlerLimitStacks: " + e.getMessage() + ", falling back to HostBalancer");
-            this.limitStack = new HostBalancer(new File(cachePath, "CrawlerLimitStacks"), onDemandLimit, exceed134217727);
-        }
-
-        this.remoteStack = null; // init on demand (on first push)
-
-        ConcurrentLog.info("NoticedURL", "opening CrawlerNoLoadStacks..");
-        try {
-            this.noloadStack = new net.yacy.rocksdb.RocksDBBalancer(new File(cachePath, "CrawlerNoLoadStacks"), onDemandLimit, exceed134217727);
-        } catch (final Exception e) {
-            ConcurrentLog.warn("NoticedURL", "Failed to initialize RocksDBBalancer for CrawlerNoLoadStacks: " + e.getMessage() + ", falling back to HostBalancer");
-            this.noloadStack = new HostBalancer(new File(cachePath, "CrawlerNoLoadStacks"), onDemandLimit, exceed134217727);
+        // Check if RocksDB-based stacks should be used
+        final boolean useRocksDBStacks = Boolean.parseBoolean(System.getProperty("rocksdb.balancer", "false"));
+        
+        if (useRocksDBStacks) {
+            try {
+                // Use single RocksDB instance for all stacks (more efficient than 4 separate ones)
+                final net.yacy.rocksdb.RocksDBCrawlStacks rocksDBStacks = 
+                    new net.yacy.rocksdb.RocksDBCrawlStacks(cachePath);
+                
+                this.coreStack = new RocksDBStackAdapter(rocksDBStacks, net.yacy.crawler.data.NoticedURL.StackType.LOCAL);
+                this.limitStack = new RocksDBStackAdapter(rocksDBStacks, net.yacy.crawler.data.NoticedURL.StackType.GLOBAL);
+                this.noloadStack = new RocksDBStackAdapter(rocksDBStacks, net.yacy.crawler.data.NoticedURL.StackType.NOLOAD);
+                this.remoteStack = null; // init on demand
+                
+                ConcurrentLog.info("NoticedURL", "RocksDB CrawlStacks activated");
+                
+            } catch (final Exception e) {
+                ConcurrentLog.warn("NoticedURL", "Failed to initialize RocksDB CrawlStacks: " + e.getMessage() + ", falling back to HostBalancer");
+                initializeHostBalancers(cachePath, onDemandLimit, exceed134217727);
+            }
+        } else {
+            ConcurrentLog.info("NoticedURL", "RocksDB CrawlStacks disabled (rocksdb.balancer=false), using HostBalancer");
+            initializeHostBalancers(cachePath, onDemandLimit, exceed134217727);
         }
         
         ConcurrentLog.info("NoticedURL", "FINISHED CREATING STACKS at " + cachePath.toString());
+    }
+    
+    /**
+     * Initialize with file-based HostBalancer (fallback or explicit disable)
+     */
+    private void initializeHostBalancers(final File cachePath, final int onDemandLimit, final boolean exceed134217727) {
+        ConcurrentLog.info("NoticedURL", "opening CrawlerCoreStacks..");
+        this.coreStack = new HostBalancer(new File(cachePath, "CrawlerCoreStacks"), onDemandLimit, exceed134217727);
+        
+        ConcurrentLog.info("NoticedURL", "opening CrawlerLimitStacks..");
+        this.limitStack = new HostBalancer(new File(cachePath, "CrawlerLimitStacks"), onDemandLimit, exceed134217727);
+        
+        ConcurrentLog.info("NoticedURL", "opening CrawlerNoLoadStacks..");
+        this.noloadStack = new HostBalancer(new File(cachePath, "CrawlerNoLoadStacks"), onDemandLimit, exceed134217727);
+        
+        this.remoteStack = null; // init on demand
     }
 
     /**
@@ -112,10 +127,20 @@ public class NoticedURL {
     protected void initRemoteStack() {
         if (this.remoteStack == null && !MemoryControl.shortStatus()) {
             ConcurrentLog.info("NoticedURL", "opening CrawlerRemoteStacks..");
-            try {
-                this.remoteStack = new net.yacy.rocksdb.RocksDBBalancer(new File(this.cachePath, "CrawlerRemoteStacks"), this.coreStack.getOnDemandLimit(), this.coreStack.getExceed134217727());
-            } catch (final Exception e) {
-                ConcurrentLog.warn("NoticedURL", "Failed to initialize RocksDBBalancer for CrawlerRemoteStacks: " + e.getMessage() + ", falling back to HostBalancer");
+            
+            // Check if using RocksDB stacks
+            final boolean useRocksDBStacks = Boolean.parseBoolean(System.getProperty("rocksdb.balancer", "false"));
+            
+            if (useRocksDBStacks && this.coreStack instanceof RocksDBStackAdapter) {
+                try {
+                    final net.yacy.rocksdb.RocksDBCrawlStacks rocksDBStacks = 
+                        ((RocksDBStackAdapter) this.coreStack).getRocksDBCrawlStacks();
+                    this.remoteStack = new RocksDBStackAdapter(rocksDBStacks, StackType.REMOTE);
+                } catch (final Exception e) {
+                    ConcurrentLog.warn("NoticedURL", "Failed to initialize RocksDB remote stack: " + e.getMessage() + ", falling back to HostBalancer");
+                    this.remoteStack = new HostBalancer(new File(this.cachePath, "CrawlerRemoteStacks"), this.coreStack.getOnDemandLimit(), this.coreStack.getExceed134217727());
+                }
+            } else {
                 this.remoteStack = new HostBalancer(new File(this.cachePath, "CrawlerRemoteStacks"), this.coreStack.getOnDemandLimit(), this.coreStack.getExceed134217727());
             }
         }
@@ -391,4 +416,106 @@ public class NoticedURL {
         }
     }
 
+}
+
+/**
+ * Adapter class to make RocksDBCrawlStacks compatible with Balancer interface
+ * Does NOT implement full Balancer interface, only the methods needed by NoticedURL
+ */
+class RocksDBStackAdapter implements Balancer {
+    private final net.yacy.rocksdb.RocksDBCrawlStacks rocksDBStacks;
+    private final NoticedURL.StackType stackType;
+    
+    RocksDBStackAdapter(final net.yacy.rocksdb.RocksDBCrawlStacks rocksDBStacks, final NoticedURL.StackType stackType) {
+        this.rocksDBStacks = rocksDBStacks;
+        this.stackType = stackType;
+    }
+    
+    net.yacy.rocksdb.RocksDBCrawlStacks getRocksDBCrawlStacks() {
+        return this.rocksDBStacks;
+    }
+    
+    @Override
+    public void close() {
+        // Do nothing - lifecycle managed by NoticedURL
+    }
+    
+    @Override
+    public void clear() {
+        this.rocksDBStacks.clear(this.stackType);
+    }
+    
+    @Override
+    public Request get(final byte[] urlhash) throws IOException {
+        return this.rocksDBStacks.get(urlhash, this.stackType);
+    }
+    
+    @Override
+    public int removeAllByProfileHandle(final String profileHandle, final long timeout) throws IOException {
+        return this.rocksDBStacks.removeAllByProfileHandle(profileHandle, timeout, this.stackType);
+    }
+    
+    @Override
+    public int removeAllByHostHashes(final Set<String> hosthashes) {
+        return this.rocksDBStacks.removeAllByHostHashes(hosthashes, this.stackType);
+    }
+    
+    @Override
+    public int remove(final net.yacy.cora.storage.HandleSet urlHashes) throws IOException {
+        int count = 0;
+        for (final byte[] urlHash : urlHashes) {
+            count += this.rocksDBStacks.remove(urlHash, this.stackType);
+        }
+        return count;
+    }
+    
+    @Override
+    public boolean has(final byte[] urlhashb) {
+        return this.rocksDBStacks.has(urlhashb, this.stackType);
+    }
+    
+    @Override
+    public int size() {
+        return (int) this.rocksDBStacks.size(this.stackType);
+    }
+    
+    @Override
+    public int getOnDemandLimit() {
+        return 1000; // default value
+    }
+    
+    @Override
+    public boolean getExceed134217727() {
+        return false; // default value
+    }
+    
+    @Override
+    public boolean isEmpty() {
+        return this.rocksDBStacks.isEmpty(this.stackType);
+    }
+    
+    @Override
+    public String push(final Request entry, final net.yacy.crawler.data.CrawlProfile profile, final net.yacy.crawler.robots.RobotsTxt robots) throws IOException {
+        return this.rocksDBStacks.push(this.stackType, entry, profile, robots);
+    }
+    
+    @Override
+    public java.util.Map<String, Integer[]> getDomainStackHosts(final net.yacy.crawler.robots.RobotsTxt robots) {
+        return new java.util.HashMap<>();
+    }
+    
+    @Override
+    public java.util.List<Request> getDomainStackReferences(final String host, int maxcount, final long maxtime) {
+        return new java.util.ArrayList<>();
+    }
+    
+    @Override
+    public Request pop(final boolean delay, final net.yacy.crawler.CrawlSwitchboard cs, final net.yacy.crawler.robots.RobotsTxt robots) throws IOException {
+        return this.rocksDBStacks.pop(this.stackType, delay, cs, robots);
+    }
+    
+    @Override
+    public java.util.Iterator<Request> iterator() throws IOException {
+        return new java.util.ArrayList<Request>().iterator();
+    }
 }

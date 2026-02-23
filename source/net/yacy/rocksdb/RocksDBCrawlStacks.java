@@ -493,16 +493,59 @@ public class RocksDBCrawlStacks implements AutoCloseable {
         }
     }
     
-    @Override
-    public void close() {
+    /**
+     * Pop first request from stack (FIFO - used by crawler)
+     */
+    public Request pop(final StackType stackType, final boolean delay, final CrawlSwitchboard cs, final RobotsTxt robots) {
         try {
-            log.info("Closing RocksDB CrawlStacks. Size at close: " + this.statsSize);
-            if (this.db != null) {
-                this.db.close();
+            final ColumnFamilyHandle stackCF = getStackCF(stackType);
+            if (stackCF == null) return null;
+            
+            // Get first entry from this stack's column family
+            try (final var it = this.db.newIterator(stackCF)) {
+                it.seekToFirst();
+                if (it.isValid()) {
+                    final byte[] key = it.key();
+                    final byte[] value = it.value();
+                    
+                    if (value != null) {
+                        // Deserialize request
+                        try {
+                            final Row.Entry entry = Request.rowdef.newEntry(value);
+                            final Request request = new Request(entry);
+                            
+                            // Remove from stack
+                            final WriteBatch batch = new WriteBatch();
+                            batch.delete(stackCF, key);
+                            
+                            // Also remove from indexes
+                            try {
+                                final String hostHash = request.url().hosthash();
+                                batch.delete(this.cfByHost, makeHostIndexKey(hostHash, key));
+                                if (request.profileHandle() != null) {
+                                    batch.delete(this.cfByProfile, makeProfileIndexKey(request.profileHandle(), key));
+                                }
+                            } catch (final Exception e) {
+                                log.warn("Error removing from indexes during pop: " + e.getMessage());
+                            }
+                            
+                            final WriteOptions writeOpts = new WriteOptions();
+                            this.db.write(writeOpts, batch);
+                            batch.close();
+                            
+                            this.statsSize--;
+                            return request;
+                        } catch (final Exception e) {
+                            log.warn("Error deserializing request during pop: " + e.getMessage());
+                            return null;
+                        }
+                    }
+                }
             }
         } catch (final Exception e) {
-            log.warn("Error closing RocksDB CrawlStacks: " + e.getMessage());
+            log.warn("Error popping from stack: " + e.getMessage());
         }
+        return null;
     }
     
     // ========= Helper Methods =========
@@ -572,5 +615,16 @@ public class RocksDBCrawlStacks implements AutoCloseable {
             if (data[offset + i] != pattern[i]) return false;
         }
         return true;
+    }
+    
+    @Override
+    public void close() {
+        try {
+            if (this.db != null) {
+                this.db.close();
+            }
+        } catch (final Exception e) {
+            log.warn("Error closing RocksDB CrawlStacks: " + e.getMessage());
+        }
     }
 }
