@@ -26,6 +26,7 @@ package net.yacy.kelondro.blob;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -34,7 +35,6 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ExecutionException;
 
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;
@@ -71,6 +71,7 @@ public class HeapReader {
     protected Gap                free;       // set of {seek, size} pairs denoting space and position of free records
     private   File               fingerprintFileIdx, fingerprintFileGap; // files with dumped indexes. Will be deleted if file is written
     private   Date               closeDate;  // records a time when the file was closed; used for debugging
+    private   boolean            indexLoadedFromDump; // true when index was loaded from dump (no rebuild needed)
 
     public HeapReader(
             final File heapFile,
@@ -84,6 +85,7 @@ public class HeapReader {
         this.heapFile.getParentFile().mkdirs();
         this.file = new CachedFileWriter(this.heapFile);
         this.closeDate = null;
+        this.indexLoadedFromDump = false;
 
         // read or initialize the index
         this.fingerprintFileIdx = null;
@@ -109,12 +111,15 @@ public class HeapReader {
             if (!ok) {
                 log.warn("HeapReader: verification of idx file for " + heapFile.toString() + " failed, re-building index");
                 initIndexReadFromHeap();
+                this.indexLoadedFromDump = false;
             } else {
                 log.info("HeapReader: using a dump of the index of " + heapFile.toString() + ".");
+                this.indexLoadedFromDump = true;
             }
         } else {
             // if we did not have a dump, create a new index
             initIndexReadFromHeap();
+            this.indexLoadedFromDump = false;
         }
 
         // merge gaps that follow directly
@@ -131,8 +136,59 @@ public class HeapReader {
         return this.index.mem(); // don't add the memory for free here since then the asserts for memory management don't work
     }
 
+    /**
+     * Optimize the index structure only - do NOT dump/unload.
+     * Used during runtime activities like merge, shrink, etc.
+     * Keeps index in memory for continued operation.
+     */
     public void optimize() {
+        if (this.index == null) return;
         this.index.optimize();
+    }
+
+    /**
+     * Optimize the index structure and unload from memory to save RAM.
+     * Used only at startup to free RAM after initial load.
+     * Subsequent access will trigger lazy-load via ensureIndexLoaded().
+     */
+    public void optimizeWithUnload() {
+        if (this.index == null) return;
+        this.index.optimize();
+
+        // Reuse the single existing dump/unload path.
+        // This avoids duplicate dump logic between startup-unload and close().
+        close(true);
+
+        // Explicit memory release (close(true) already does this, keep for clarity)
+        this.index = null;
+        this.free = null;
+    }
+
+    /**
+     * @return true when the index was loaded from dump (no rebuild from heap)
+     */
+    public boolean isIndexLoadedFromDump() {
+        return this.indexLoadedFromDump;
+    }
+
+    /**
+     * Ensure index is loaded. If it was freed, reload from dump or regenerate from heap.
+     * @throws IOException if index cannot be loaded or regenerated
+     */
+    private synchronized void ensureIndexLoaded() throws IOException {
+        if (this.file == null) {
+            this.file = new CachedFileWriter(this.heapFile);
+        }
+        if (this.index != null) return; // Already loaded
+        
+        log.info("HeapReader: reloading index for " + this.heapFile.getName());
+        
+        // Try to load from dump first (fast)
+        if (!initIndexReadDump()) {
+            // Dump doesn't exist or is corrupt - regenerate from heap (slow)
+            log.warn("HeapReader: index dump not available, regenerating from " + this.heapFile.getName());
+            initIndexReadFromHeap();
+        }
     }
 
     protected byte[] normalizeKey(byte[] key) {
@@ -165,9 +221,25 @@ public class HeapReader {
             return false;
         }
         this.fingerprintFileIdx = HeapWriter.fingerprintIndexFile(this.heapFile, fingerprint);
-        if (!this.fingerprintFileIdx.exists()) this.fingerprintFileIdx = new File(this.fingerprintFileIdx.getAbsolutePath() + ".gz");
+        if (!this.fingerprintFileIdx.exists()) {
+            final File idxRaw = this.fingerprintFileIdx;
+            final File idxGz = new File(idxRaw.getAbsolutePath() + ".gz");
+            if (idxRaw.exists()) {
+                this.fingerprintFileIdx = idxRaw;
+            } else if (idxGz.exists()) {
+                this.fingerprintFileIdx = idxGz;
+            }
+        }
         this.fingerprintFileGap = HeapWriter.fingerprintGapFile(this.heapFile, fingerprint);
-        if (!this.fingerprintFileGap.exists()) this.fingerprintFileGap = new File(this.fingerprintFileGap.getAbsolutePath() + ".gz");
+        if (!this.fingerprintFileGap.exists()) {
+            final File gapRaw = this.fingerprintFileGap;
+            final File gapGz = new File(gapRaw.getAbsolutePath() + ".gz");
+            if (gapRaw.exists()) {
+                this.fingerprintFileGap = gapRaw;
+            } else if (gapGz.exists()) {
+                this.fingerprintFileGap = gapGz;
+            }
+        }
         if (!this.fingerprintFileIdx.exists() || !this.fingerprintFileGap.exists()) {
             deleteAllFingerprints(this.heapFile, this.fingerprintFileIdx.getName(), this.fingerprintFileGap.getName());
             return false;
@@ -185,13 +257,9 @@ public class HeapReader {
             return false;
         }
 
-        // check saturation
-        if (this.index instanceof RowHandleMap) {
-        int[] saturation = ((RowHandleMap) this.index).saturation(); // {<the maximum length of consecutive equal-beginning bytes in the key>, <the minimum number of leading zeros in the second column>}
-        log.info("HeapReader: saturation of " + this.fingerprintFileIdx.getName() + ": keylength = " + saturation[0] + ", vallength = " + saturation[1] + ", size = " + this.index.size() +
-                    ", maximum saving for index-compression = " + (saturation[0] * this.index.size() / 1024 / 1024) + " MB" +
-                    ", exact saving for value-compression = " + (saturation[1] * this.index.size() / 1024 / 1024) + " MB");
-        }
+        // Skip saturation check - it iterates over ALL entries and causes severe delays
+        // on large indexes (14M+ entries = minutes of blocking). Only useful for debugging.
+        // log.info("HeapReader: loaded index from " + this.fingerprintFileIdx.getName() + ", size = " + this.index.size());
 
         // read the gap file:
         try {
@@ -248,71 +316,151 @@ public class HeapReader {
     }
 
     private void initIndexReadFromHeap() throws IOException {
+        this.indexLoadedFromDump = false;
         // this initializes the this.index object by reading positions from the heap file
-        log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (this.file.length() / 1024 / 1024) + " MB. Please wait.");
+        final long totalBytes = this.file.length();
+        log.info("HeapReader: generating index for " + this.heapFile.toString() + ", " + (totalBytes / 1024 / 1024) + " MB. Please wait.");
 
         this.free = new Gap();
-        RowHandleMap.initDataConsumer indexready = RowHandleMap.asynchronusInitializer(this.name() + ".initializer", this.keylength, this.ordering, 8, Math.max(10, (int) (Runtime.getRuntime().freeMemory() / (10 * 1024 * 1024))));
+
+        // Use RAM-based RowHandleMap (default)
+        // Estimate expected number of entries from file size to get a better RAMIndexCluster spread.
+        // Using freeMemory() here caused expectedspace ~10..50, which collapsed spread to 1 shard
+        // and triggered huge single RowCollection grow allocations (SpaceExceededException).
+        final long avgRecordBytes = Math.max(128L, this.keylength + 8L);
+        final long estimatedEntriesLong = Math.max(10L, totalBytes / avgRecordBytes);
+        final int estimatedEntries = estimatedEntriesLong > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) estimatedEntriesLong;
+        this.index = new RowHandleMap(this.keylength, this.ordering, 8, estimatedEntries, this.name() + ".initializer");
+
+        // Read all records from heap and build index
         byte[] key = new byte[this.keylength];
-        int reclen;
-        long seek = 0;
-        if (this.file.length() > 0) {
-        loop: while (true) { // don't test available() here because this does not work for files > 2GB
-
-            try {
-                // go to seek position
-                this.file.seek(seek);
-
-                // read length of the following record without the length of the record size bytes
-                reclen = this.file.readInt();
-                //assert reclen > 0 : " reclen == 0 at seek pos " + seek;
-                if (reclen == 0) {
-                    // very bad file inconsistency
-                    log.severe("HeapReader: reclen == 0 at seek pos " + seek + " in file " + this.heapFile);
-                    this.file.setLength(seek); // delete everything else at the remaining of the file :-(
-                    break loop;
-                }
-
-                // read key
-                this.file.readFully(key, 0, key.length);
-
-            } catch (final IOException e) {
-                // EOF reached
-                break loop; // terminate loop
-            }
-
-            // check if this record is empty
-            if (key == null || key[0] == 0) {
-                // it is an empty record, store to free list
-                if (reclen > 0) this.free.put(seek, reclen);
-            } else {
-                if (this.ordering.wellformed(key)) {
-                    indexready.consume(key, seek);
-                    key = new byte[this.keylength];
-                } else {
-                    // free the lost space
-                    this.free.put(seek, reclen);
-                    this.file.seek(seek + 4);
-                    Arrays.fill(key, (byte) 0);
-                    this.file.write(key); // mark the place as empty record
-                    log.warn("HeapReader: BLOB " + this.heapFile.getName() + ": skiped not wellformed key " + UTF8.String(key) + " at seek pos " + seek);
-                }
-            }
-            // new seek position
-            seek += 4L + reclen;
-        }
-        }
-        indexready.finish();
-
-        // finish the index generation
+        
+        // Use buffered stream reading instead of RandomAccessFile.seek() for 100x+ performance
+        // RandomAccessFile.seek() is called for EVERY record (29M+ times), which is extremely slow
+        FileInputStream fis = new FileInputStream(this.heapFile);
+        BufferedInputStream bis = new BufferedInputStream(fis, 16 * 1024 * 1024); // 16MB buffer for good throughput
+        DataInputStream dis = new DataInputStream(bis);
+        
         try {
-            this.index = indexready.result();
-        } catch (final InterruptedException e) {
-        	ConcurrentLog.logException(e);
-        } catch (final ExecutionException e) {
-        	ConcurrentLog.logException(e);
+            long seek = 0;
+            int reclen;
+            long records = 0;
+            long startTime = System.currentTimeMillis();
+            long lastLogTime = startTime;
+            long lastLogSeek = 0;
+            final boolean inplace = Boolean.getBoolean("yacy.index.progress.inplace");
+            long lastConsoleTime = startTime;
+            String lastConsoleLine = "";
+            
+            while (true) {
+                try {
+                    // read length of the following record without the length of the record size bytes
+                    reclen = dis.readInt();
+                    
+                    if (reclen <= 0) {
+                        // very bad file inconsistency - reclen must be positive
+                        if (reclen == 0) {
+                            log.severe("HeapReader: reclen == 0 at seek pos " + seek + " in file " + this.heapFile);
+                        } else {
+                            log.severe("HeapReader: reclen < 0 (" + reclen + ") at seek pos " + seek + " in file " + this.heapFile + " - file is corrupted, stopping read");
+                        }
+                        break;
+                    }
+
+                    // read key
+                    dis.readFully(key, 0, key.length);
+
+                    // check if this record is empty
+                    if (key == null || key[0] == 0) {
+                        // it is an empty record, store to free list
+                        if (reclen > 0) this.free.put(seek, reclen);
+                    } else {
+                        if (this.ordering.wellformed(key)) {
+                            try {
+                                this.index.putUnique(key, seek);
+                            } catch (final SpaceExceededException e) {
+                                throw new IOException("Insufficient heap while building index for " + this.heapFile.getName() +
+                                        " at seek " + seek + " (records: " + records + ")", e);
+                            }
+                            key = new byte[this.keylength];
+                        } else {
+                            // free the lost space
+                            this.free.put(seek, reclen);
+                            Arrays.fill(key, (byte) 0);
+                            log.warn("HeapReader: BLOB " + this.heapFile.getName() + ": skiped not wellformed key " + UTF8.String(key) + " at seek pos " + seek);
+                        }
+                    }
+                    
+                    // skip the rest of the record (we only need key and position for index)
+                    long skipBytes = reclen - this.keylength;
+                    if (skipBytes > 0) {
+                        long skipped = dis.skip(skipBytes);
+                        while (skipped < skipBytes) {
+                            long s = dis.skip(skipBytes - skipped);
+                            if (s <= 0) break; // can't skip more
+                            skipped += s;
+                        }
+                    }
+                    
+                    // new seek position
+                    seek += 4L + reclen;
+                    records++;
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastLogTime >= 60000 || seek - lastLogSeek >= (512L * 1024 * 1024)) {
+                        double pct = totalBytes > 0 ? (100.0 * seek / totalBytes) : 0.0;
+                        double elapsedSec = (now - startTime) / 1000.0;
+                        double mbPerSec = elapsedSec > 0 ? (seek / 1024.0 / 1024.0) / elapsedSec : 0.0;
+                        long etaMillis = (seek > 0 && totalBytes > 0) ? (long) ((totalBytes - seek) / (seek / (double) (now - startTime))) : 0;
+                        log.info("HeapReader: indexing " + this.heapFile.getName() + " " + String.format("%.1f", pct) + "% (" + (seek / 1024 / 1024) + "/" + (totalBytes / 1024 / 1024) + " MB), " + records + " records, " + String.format("%.1f", mbPerSec) + " MB/s, ETA " + formatDuration(etaMillis));
+                        lastLogTime = now;
+                        lastLogSeek = seek;
+                    }
+
+                    if (inplace && now - lastConsoleTime >= 1000) {
+                        double pct = totalBytes > 0 ? (100.0 * seek / totalBytes) : 0.0;
+                        String line = "HeapReader: indexing " + this.heapFile.getName() + " " + String.format("%.1f", pct) + "% (" + (seek / 1024 / 1024) + "/" + (totalBytes / 1024 / 1024) + " MB), " + records + " records";
+                        if (line.length() < lastConsoleLine.length()) {
+                            StringBuilder pad = new StringBuilder(line);
+                            for (int i = line.length(); i < lastConsoleLine.length(); i++) {
+                                pad.append(' ');
+                            }
+                            line = pad.toString();
+                        }
+                        System.out.print("\r" + line);
+                        System.out.flush();
+                        lastConsoleLine = line;
+                        lastConsoleTime = now;
+                    }
+                    
+                } catch (final EOFException e) {
+                    // EOF reached
+                    break;
+                }
+            }
+        } finally {
+            dis.close(); // closes the BufferedInputStream and FileInputStream
+            if (Boolean.getBoolean("yacy.index.progress.inplace")) {
+                System.out.print("\n");
+                System.out.flush();
+            }
         }
+
         log.info("HeapReader: finished index generation for " + this.heapFile.toString() + ", " + this.index.size() + " entries, " + this.free.size() + " gaps.");
+    }
+
+    private static String formatDuration(long millis) {
+        if (millis <= 0) return "0s";
+        long seconds = millis / 1000;
+        long minutes = seconds / 60;
+        long hours = minutes / 60;
+        if (hours > 0) {
+            return hours + "h " + (minutes % 60) + "m";
+        }
+        if (minutes > 0) {
+            return minutes + "m " + (seconds % 60) + "s";
+        }
+        return seconds + "s";
     }
 
     private void mergeFreeEntries() throws IOException {
@@ -358,6 +506,12 @@ public class HeapReader {
      * @return the number of BLOBs in the heap
      */
     public int size() {
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.warn("HeapReader: could not load index in size() for " + this.heapFile.getName() + ": " + e.getMessage());
+            return 0;
+        }
         assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in size(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
@@ -367,6 +521,12 @@ public class HeapReader {
     }
 
     public boolean isEmpty() {
+        try {
+            ensureIndexLoaded();
+        } catch (final IOException e) {
+            log.warn("HeapReader: could not load index in isEmpty() for " + this.heapFile.getName() + ": " + e.getMessage());
+            return true;
+        }
         assert (this.index != null) : "index == null; closeDate=" + this.closeDate + ", now=" + new Date();
         if (this.index == null) {
             log.severe("HeapReader: this.index == null in isEmpty(); closeDate=" + this.closeDate + ", now=" + new Date() + this.heapFile == null ? "" : (" file = " + this.heapFile.toString()));
@@ -496,10 +656,17 @@ public class HeapReader {
 
             // access the file and read the container
             this.file.seek(pos);
-            final int len = this.file.readInt() - this.keylength;
+            final int rawLen = this.file.readInt();
+            if (rawLen <= 0) {
+                // database file is corrupted - record size must be positive
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": invalid record size. len = " + rawLen + " (must be > 0)");
+                this.index.remove(key);
+                return null;
+            }
+            final int len = rawLen - this.keylength;
             if (len < 0) {
                 // database file may be corrupted and should be deleted :-((
-                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": negative len. len = " + len + ", pk.len = " + this.keylength);
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": record size (" + rawLen + ") < keylength (" + this.keylength + ")");
                 // to get lazy over that problem (who wants to tell the user to stop operation and delete the file???) we work on like the entry does not exist
                 this.index.remove(key);
                 return null;
@@ -593,7 +760,21 @@ public class HeapReader {
 
             // access the file and read the size of the container
             this.file.seek(pos);
-            return this.file.readInt() - this.keylength;
+            final int rawLen = this.file.readInt();
+            if (rawLen <= 0) {
+                // corrupted file - record size is invalid
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": invalid size. len = " + rawLen);
+                this.index.remove(key);
+                return -1;
+            }
+            final int len = rawLen - this.keylength;
+            if (len < 0) {
+                // also corrupted - size smaller than key length
+                log.severe("HeapReader: file " + this.file.file() + " corrupted at " + pos + ": size (" + rawLen + ") < keylength (" + this.keylength + ")");
+                this.index.remove(key);
+                return -1;
+            }
+            return len;
         }
     }
 

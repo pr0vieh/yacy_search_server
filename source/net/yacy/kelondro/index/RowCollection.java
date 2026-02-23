@@ -238,7 +238,11 @@ public class RowCollection implements Sortable<Row.Entry>, Iterable<Row.Entry>, 
         allocram = (needed * growfactorSmall100) / 100L;
         allocram -= allocram % this.rowdef.objectsize;
         assert allocram >= 0 : "elements = " + elements + ", new = " + allocram;
-        return allocram;
+
+        // Low-memory fallback: if growth factors don't fit, fall back to exact needed size.
+        // This avoids SpaceExceededException caused only by growth overhead.
+        if (allocram <= Integer.MAX_VALUE && MemoryControl.request(allocram, false)) return allocram;
+        return needed;
     }
 
     private final void ensureSize(final int elements) throws SpaceExceededException {
