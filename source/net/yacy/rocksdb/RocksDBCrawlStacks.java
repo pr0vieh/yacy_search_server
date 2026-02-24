@@ -28,9 +28,11 @@ import org.rocksdb.LRUCache;
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;
 import net.yacy.cora.document.id.DigestURL;
+import net.yacy.cora.protocol.ClientIdentification;
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.crawler.CrawlSwitchboard;
 import net.yacy.crawler.data.CrawlProfile;
+import net.yacy.crawler.data.Latency;
 import net.yacy.crawler.data.NoticedURL.StackType;
 import net.yacy.crawler.retrieval.Request;
 import net.yacy.crawler.robots.RobotsTxt;
@@ -84,8 +86,11 @@ public class RocksDBCrawlStacks implements AutoCloseable {
     private ColumnFamilyHandle cfByHost;
     private ColumnFamilyHandle cfByProfile;
     
-    // Statistics
-    private volatile long statsSize = 0;
+    // Statistics (exact per stack)
+    private volatile long statsSizeCore = 0;
+    private volatile long statsSizeLimit = 0;
+    private volatile long statsSizeRemote = 0;
+    private volatile long statsSizeNoload = 0;
     private volatile long statsLastFlush = System.currentTimeMillis();
     
     public RocksDBCrawlStacks(final File cachePath) throws RocksDBException, IOException {
@@ -172,6 +177,12 @@ public class RocksDBCrawlStacks implements AutoCloseable {
         
         log.info("RocksDB CrawlStacks initialized: blockCacheMB=" + this.blockCacheMB + 
                  ", writeBufferMB=" + this.writeBufferMB + ", maxBackgroundJobs=" + this.maxBackgroundJobs);
+
+        // Initialize exact counters from persisted data
+        this.statsSizeCore = countEntries(this.cfCoreStack);
+        this.statsSizeLimit = countEntries(this.cfLimitStack);
+        this.statsSizeRemote = countEntries(this.cfRemoteStack);
+        this.statsSizeNoload = countEntries(this.cfNoloadStack);
     }
     
     /**
@@ -216,7 +227,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
             this.db.write(writeOpts, batch);
             batch.close();
             
-            this.statsSize++;
+            adjustStackSize(stackType, 1);
             return null; // success
             
         } catch (final Exception e) {
@@ -298,7 +309,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
             this.db.write(writeOpts, batch);
             batch.close();
             
-            this.statsSize--;
+            adjustStackSize(stackType, -1);
             return 1;
             
         } catch (final Exception e) {
@@ -348,7 +359,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
                 final WriteOptions writeOpts = new WriteOptions();
                 this.db.write(writeOpts, batch);
                 batch.close();
-                this.statsSize -= removed;
+                adjustStackSize(stackType, -removed);
             }
             
         } catch (final Exception e) {
@@ -414,7 +425,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
                 final WriteOptions writeOpts = new WriteOptions();
                 this.db.write(writeOpts, batch);
                 batch.close();
-                this.statsSize -= removed;
+                adjustStackSize(stackType, -removed);
             }
             
         } catch (final Exception e) {
@@ -432,9 +443,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
             final ColumnFamilyHandle stackCF = getStackCF(stackType);
             if (stackCF == null) return 0;
             
-            // RocksDB doesn't provide O(1) size, we'd need to track it
-            // For now return estimated based on statistics gathered
-            return this.statsSize;
+            return getStackSize(stackType);
             
         } catch (final Exception e) {
             log.warn("Error getting size: " + e.getMessage());
@@ -447,6 +456,91 @@ public class RocksDBCrawlStacks implements AutoCloseable {
      */
     public boolean isEmpty(final StackType stackType) {
         return size(stackType) == 0;
+    }
+
+    /**
+     * Get domain hosts distribution for a given stack.
+     *
+     * Result map key is host name, value[0] is URL count for that host,
+     * value[1] is delay placeholder (0 for RocksDB implementation).
+     */
+    public Map<String, Integer[]> getDomainStackHosts(final StackType stackType, final RobotsTxt robots) {
+        final Map<String, Integer[]> hosts = new HashMap<>();
+        try {
+            final ColumnFamilyHandle stackCF = getStackCF(stackType);
+            if (stackCF == null) return hosts;
+
+            try (final var it = this.db.newIterator(stackCF)) {
+                it.seekToFirst();
+                while (it.isValid()) {
+                    final byte[] value = it.value();
+                    if (value != null) {
+                        try {
+                            final Row.Entry entry = Request.rowdef.newEntry(value);
+                            final Request request = new Request(entry);
+                            final DigestURL url = request.url();
+                            final String host = (url == null) ? null : url.getHost();
+                            if (host != null && !host.isEmpty()) {
+                                Integer[] stats = hosts.get(host);
+                                if (stats == null) {
+                                    stats = new Integer[] {1, 0};
+                                    hosts.put(host, stats);
+                                } else {
+                                    stats[0] = stats[0] + 1;
+                                }
+                            }
+                        } catch (final Exception e) {
+                            // ignore malformed entries and continue
+                        }
+                    }
+                    it.next();
+                }
+            }
+        } catch (final Exception e) {
+            log.warn("Error getting domain stack hosts: " + e.getMessage());
+        }
+        return hosts;
+    }
+
+    /**
+     * Get crawl requests for a specific host from a given stack.
+     */
+    public List<Request> getDomainStackReferences(final StackType stackType, final String host, final int maxcount, final long maxtime) {
+        final List<Request> result = new ArrayList<>();
+        if (host == null || host.isEmpty() || maxcount <= 0) return result;
+
+        final long startTime = System.currentTimeMillis();
+        try {
+            final ColumnFamilyHandle stackCF = getStackCF(stackType);
+            if (stackCF == null) return result;
+
+            try (final var it = this.db.newIterator(stackCF)) {
+                it.seekToFirst();
+                while (it.isValid() && result.size() < maxcount) {
+                    if (maxtime > 0 && System.currentTimeMillis() - startTime > maxtime) {
+                        break;
+                    }
+                    final byte[] value = it.value();
+                    if (value != null) {
+                        try {
+                            final Row.Entry entry = Request.rowdef.newEntry(value);
+                            final Request request = new Request(entry);
+                            final DigestURL url = request.url();
+                            final String requestHost = (url == null) ? null : url.getHost();
+                            if (host.equals(requestHost)) {
+                                result.add(request);
+                            }
+                        } catch (final Exception e) {
+                            // ignore malformed entries and continue
+                        }
+                    }
+                    it.next();
+                }
+            }
+        } catch (final Exception e) {
+            log.warn("Error getting domain stack references: " + e.getMessage());
+        }
+        return result;
     }
     
     /**
@@ -466,7 +560,6 @@ public class RocksDBCrawlStacks implements AutoCloseable {
                         batch.delete(stackCF, key);
                         count++;
                         if (count % 1000 == 0) {
-                            it.close();
                             this.db.write(new WriteOptions(), batch);
                             batch.clear();
                         }
@@ -476,7 +569,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
                         this.db.write(new WriteOptions(), batch);
                     }
                     batch.close();
-                    this.statsSize = 0;
+                    setStackSize(stackType, 0);
                 }
             }
         } catch (final Exception e) {
@@ -514,6 +607,27 @@ public class RocksDBCrawlStacks implements AutoCloseable {
                             final Row.Entry entry = Request.rowdef.newEntry(value);
                             final Request request = new Request(entry);
                             
+                            // Resolve profile and apply crawl politeness delay
+                            CrawlProfile profileEntry = null;
+                            if (cs != null && request.profileHandle() != null) {
+                                profileEntry = cs.get(UTF8.getBytes(request.profileHandle()));
+                            }
+
+                            final ClientIdentification.Agent agent =
+                                    profileEntry == null ? ClientIdentification.yacyInternetCrawlerAgent : profileEntry.getAgent();
+
+                            final long sleepTime = Latency.getDomainSleepTime(robots, profileEntry, request.url());
+                            if (delay && sleepTime > 0) {
+                                try {
+                                    Thread.sleep(sleepTime);
+                                } catch (final InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+
+                            final long robotsTime = Latency.getRobotsTime(robots, request.url(), agent);
+                            Latency.updateAfterSelection(request.url(), profileEntry == null ? 0 : robotsTime);
+
                             // Remove from stack
                             final WriteBatch batch = new WriteBatch();
                             batch.delete(stackCF, key);
@@ -533,7 +647,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
                             this.db.write(writeOpts, batch);
                             batch.close();
                             
-                            this.statsSize--;
+                            adjustStackSize(stackType, -1);
                             return request;
                         } catch (final Exception e) {
                             log.warn("Error deserializing request during pop: " + e.getMessage());
@@ -558,6 +672,53 @@ public class RocksDBCrawlStacks implements AutoCloseable {
             case NOLOAD: return this.cfNoloadStack;
             default: return null;
         }
+    }
+
+    private long countEntries(final ColumnFamilyHandle stackCF) {
+        if (stackCF == null) return 0;
+        long count = 0;
+        try (final var it = this.db.newIterator(stackCF)) {
+            it.seekToFirst();
+            while (it.isValid()) {
+                count++;
+                it.next();
+            }
+        }
+        return count;
+    }
+
+    private long getStackSize(final StackType stackType) {
+        switch (stackType) {
+            case LOCAL: return this.statsSizeCore;
+            case GLOBAL: return this.statsSizeLimit;
+            case REMOTE: return this.statsSizeRemote;
+            case NOLOAD: return this.statsSizeNoload;
+            default: return 0;
+        }
+    }
+
+    private void setStackSize(final StackType stackType, final long value) {
+        final long newValue = Math.max(0, value);
+        switch (stackType) {
+            case LOCAL:
+                this.statsSizeCore = newValue;
+                break;
+            case GLOBAL:
+                this.statsSizeLimit = newValue;
+                break;
+            case REMOTE:
+                this.statsSizeRemote = newValue;
+                break;
+            case NOLOAD:
+                this.statsSizeNoload = newValue;
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void adjustStackSize(final StackType stackType, final long delta) {
+        setStackSize(stackType, getStackSize(stackType) + delta);
     }
     
     /**

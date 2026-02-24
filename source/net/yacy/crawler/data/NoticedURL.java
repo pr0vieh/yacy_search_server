@@ -353,7 +353,7 @@ public class NoticedURL {
 
     protected void shift(final StackType fromStack, final StackType toStack, final CrawlSwitchboard cs, final RobotsTxt robots) {
         try {
-            final Request entry = this.pop(fromStack, false, cs, robots);
+            final Request entry = this.pop(fromStack, true, cs, robots);
             if (entry != null) {
                 final String warning = this.push(toStack, entry, null, robots);
                 if (warning != null) {
@@ -453,7 +453,7 @@ public class NoticedURL {
                 
                 // Fall back to simple sequential shifting if domain-diverse approach doesn't yield enough
                 while (shifted < count) {
-                    final Request entry = this.pop(fromStack, false, cs, robots);
+                    final Request entry = this.pop(fromStack, true, cs, robots);
                     if (entry == null) break;
                     final String warning = this.push(toStack, entry, null, robots);
                     if (warning != null) {
@@ -475,7 +475,7 @@ public class NoticedURL {
             } else {
                 // Only one domain or empty - just shift sequentially
                 for (int i = 0; i < count; i++) {
-                    final Request entry = this.pop(fromStack, false, cs, robots);
+                    final Request entry = this.pop(fromStack, true, cs, robots);
                     if (entry == null) break;
                     final String warning = this.push(toStack, entry, null, robots);
                     if (warning != null) {
@@ -652,12 +652,12 @@ class RocksDBStackAdapter implements Balancer {
     
     @Override
     public java.util.Map<String, Integer[]> getDomainStackHosts(final net.yacy.crawler.robots.RobotsTxt robots) {
-        return new java.util.HashMap<>();
+        return this.rocksDBStacks.getDomainStackHosts(this.stackType, robots);
     }
     
     @Override
     public java.util.List<Request> getDomainStackReferences(final String host, int maxcount, final long maxtime) {
-        return new java.util.ArrayList<>();
+        return this.rocksDBStacks.getDomainStackReferences(this.stackType, host, maxcount, maxtime);
     }
     
     @Override

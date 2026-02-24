@@ -34,3 +34,4 @@ yacy.log
 /lib
 vagrant_yacy/.vagrant/
 .gradle
+/graalvm-jdk-25.0.2+10.1/
