@@ -62,7 +62,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
     
     // Configuration
     private static final String NAME = "crawlstacks";
-    private final int blockCacheMB = Integer.getInteger("rocksdb.crawl.blockCacheMB", 128);
+    private final int blockCacheMB = Integer.getInteger("rocksdb.crawl.blockCacheMB", 64);  // CHANGED: from 128 to 64, room for mmap
     private final int writeBufferMB = Integer.getInteger("rocksdb.crawl.writeBufferMB", 32);
     private final int maxWriteBufferNumber = Integer.getInteger("rocksdb.crawl.maxWriteBufferNumber", 3);
     private final int maxBackgroundJobs = Integer.getInteger("rocksdb.crawl.maxBackgroundJobs", 4);
@@ -121,9 +121,13 @@ public class RocksDBCrawlStacks implements AutoCloseable {
         final DBOptions dbOptions = new DBOptions()
             .setCreateIfMissing(true)
             .setCreateMissingColumnFamilies(true)
-            .setMaxOpenFiles(512)
+            .setMaxOpenFiles(48)  // CRITICAL: Smaller limit - Crawl stacks are smaller, force aggressive unmapping
             .setMaxBackgroundJobs(this.maxBackgroundJobs)
-            .setIncreaseParallelism(this.maxBackgroundJobs);
+            .setIncreaseParallelism(this.maxBackgroundJobs)
+            .setAdviseRandomOnOpen(true)  // ADDED: Hint for random access patterns
+            .setUseFsync(false)  // ADDED: Use fdatasync for better performance
+            .setAllowMmapReads(true)  // ADDED: Allow mmap reads for performance (auto-limited by MaxOpenFiles)
+            .setAllowMmapWrites(false);  // ADDED: Forbid mmap writes
         
         // Create table configuration with cache and bloom filter
         final LRUCache blockCache = new LRUCache(Math.max(64L, this.blockCacheMB) * 1024L * 1024L);
@@ -131,7 +135,7 @@ public class RocksDBCrawlStacks implements AutoCloseable {
         final BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
             .setBlockCache(blockCache)
             .setFilterPolicy(bloomFilter)
-            .setCacheIndexAndFilterBlocks(true)
+            .setCacheIndexAndFilterBlocks(false)  // CHANGED: Reduced from true to prevent aggressive mmap
             .setFilterPolicy(bloomFilter);
         
         final ColumnFamilyOptions cfOptions = new ColumnFamilyOptions()
