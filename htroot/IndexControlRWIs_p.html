@@ -37,6 +37,20 @@
             No reference size limitation (this may cause strong CPU load when words are searched that appear very often)<br/>
             <input type="radio" name="maxReferencesRadio" id="maxReferencesRadioOn" value="on" #(maxReferencesRadioChecked)#::checked="checked"#(/maxReferencesRadioChecked)# onclick="this.form.submit()"/>
             Limitation of number of references per word: <input type="text" name="maxReferences" value="#[maxReferences]#" size="9" maxlength="12" onfocus="document.getElementById('maxReferencesRadioOff').checked = false;document.getElementById('maxReferencesRadioOn').checked = true"/> (this causes that old references are deleted if that limit is reached)<br/><br/>
+          <strong>Runtime Top-K Guard (RocksDB RWI)</strong><br/>
+          <input type="checkbox" name="runtimeTopKEnabled" id="runtimeTopKEnabled" value="true" #(runtimeTopKEnabledChecked)#::checked="checked"#(/runtimeTopKEnabledChecked)# />
+          <label for="runtimeTopKEnabled">Enable runtime Top-K + host diversity maintenance</label><br/>
+          Keep Top-K per term: <input type="text" name="runtimeTopK" value="#[runtimeTopK]#" size="9" maxlength="12" />
+          &nbsp; Soft-Cap trigger: <input type="text" name="runtimeSoftCap" value="#[runtimeSoftCap]#" size="9" maxlength="12" />
+          &nbsp; Max per host: <input type="text" name="runtimeMaxPerHost" value="#[runtimeMaxPerHost]#" size="6" maxlength="6" /><br/><br/>
+            <em>Runtime stats (since start):</em><br/>
+            add calls: #[runtimeStats_addCalls]#,
+            pass disabled: #[runtimeStats_passDisabled]#,
+            pass below soft-cap: #[runtimeStats_passBelowSoftCap]#,<br/>
+            rebalance runs: #[runtimeStats_rebalanceRuns]#,
+            candidates: #[runtimeStats_candidates]#,
+            selected: #[runtimeStats_selected]#,
+            dropped: #[runtimeStats_dropped]#<br/><br/>
             <button type="submit" id="maxReferencesLimit" class="btn btn-primary" style="width:240px;">Set References Limit</button>
         </dd>
       </dl>

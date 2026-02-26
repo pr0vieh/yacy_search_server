@@ -293,6 +293,22 @@ public final class SwitchboardConstants {
     /** Default maximum system load allowing remote RWI searches */
     public static final float REMOTESEARCH_MAXLOAD_RWI_DEFAULT  = 2.0f * Runtime.getRuntime().availableProcessors();
 
+    /** Enable runtime RWI Top-K guard with host diversity in RocksDB write path */
+    public static final String INDEX_RWI_RUNTIME_TOPK_ENABLED = "index.rwi.runtimeTopK.enabled";
+    public static final boolean INDEX_RWI_RUNTIME_TOPK_ENABLED_DEFAULT = true;
+
+    /** Runtime Top-K keep size per term */
+    public static final String INDEX_RWI_RUNTIME_TOPK_K = "index.rwi.runtimeTopK.k";
+    public static final int INDEX_RWI_RUNTIME_TOPK_K_DEFAULT = 1000;
+
+    /** Runtime soft cap per term (rebalance trigger threshold) */
+    public static final String INDEX_RWI_RUNTIME_TOPK_SOFTCAP = "index.rwi.runtimeTopK.softCap";
+    public static final int INDEX_RWI_RUNTIME_TOPK_SOFTCAP_DEFAULT = 1200;
+
+    /** Runtime host diversity cap per host within Top-K */
+    public static final String INDEX_RWI_RUNTIME_TOPK_MAXPERHOST = "index.rwi.runtimeTopK.maxPerHost";
+    public static final int INDEX_RWI_RUNTIME_TOPK_MAXPERHOST_DEFAULT = 3;
+
     /** Setting key to configure the maximum system load allowing remote Solr searches */
     public static final String REMOTESEARCH_MAXLOAD_SOLR        = "remotesearch.maxload.solr";
 

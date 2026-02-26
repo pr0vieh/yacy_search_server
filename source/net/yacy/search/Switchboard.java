@@ -1509,7 +1509,9 @@ public final class Switchboard extends serverSwitch {
             final File segmentsPath = new File(new File(indexPrimaryPath, networkName), "SEGMENTS");
             final File archivePath = this.getDataPath(SwitchboardConstants.INDEX_ARCHIVE_PATH, SwitchboardConstants.INDEX_ARCHIVE_DEFAULT);
             this.index = new Segment(this.log, segmentsPath, archivePath, collectionConfiguration, webgraphConfiguration);
-            if (this.getConfigBool(SwitchboardConstants.CORE_SERVICE_RWI, true)) this.index.connectRWI(wordCacheMaxCount, fileSizeMax);
+            if (this.getConfigBool(SwitchboardConstants.CORE_SERVICE_RWI, true)) {
+                this.index.connectRWI(wordCacheMaxCount, fileSizeMax);
+            }
             if (this.getConfigBool(SwitchboardConstants.CORE_SERVICE_CITATION, true)) this.index.connectCitation(wordCacheMaxCount, fileSizeMax);
             if (this.getConfigBool(SwitchboardConstants.CORE_SERVICE_FULLTEXT,
                     SwitchboardConstants.CORE_SERVICE_FULLTEXT_DEFAULT)) {

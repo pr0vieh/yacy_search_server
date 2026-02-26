@@ -4,21 +4,25 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Iterator;
 import java.util.TreeSet;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.rocksdb.RocksIterator;
 
+import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.order.Base64Order;
 import net.yacy.cora.order.ByteOrder;
 import net.yacy.cora.order.CloneableIterator;
 import net.yacy.cora.order.Order;
 import net.yacy.cora.sorting.Rating;
 import net.yacy.cora.storage.HandleSet;
+import net.yacy.cora.util.ByteArray;
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.cora.util.SpaceExceededException;
 import net.yacy.kelondro.data.word.Word;
@@ -30,22 +34,111 @@ import net.yacy.kelondro.rwi.ReferenceContainerOrder;
 import net.yacy.kelondro.data.word.WordReference;
 import net.yacy.kelondro.data.word.WordReferenceFactory;
 import net.yacy.kelondro.rwi.TermSearch;
+import net.yacy.search.Switchboard;
+import net.yacy.search.SwitchboardConstants;
 
 public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> {
     private final WordUrlRefStore store;
     private final WordReferenceFactory factory;
     private final ByteOrder termOrder;
+    private final boolean runtimeTopKEnabled;
+    private final int runtimeTopK;
+    private final int runtimeSoftCap;
+    private final int runtimeMaxPerHost;
+    private final boolean syncWrites;
+
+    private static final AtomicLong runtimeAddCalls = new AtomicLong(0L);
+    private static final AtomicLong runtimePassDisabled = new AtomicLong(0L);
+    private static final AtomicLong runtimePassBelowSoftCap = new AtomicLong(0L);
+    private static final AtomicLong runtimeRebalanceRuns = new AtomicLong(0L);
+    private static final AtomicLong runtimeCandidates = new AtomicLong(0L);
+    private static final AtomicLong runtimeSelected = new AtomicLong(0L);
+    private static final AtomicLong runtimeDropped = new AtomicLong(0L);
+
+    private static final class RankedRecord {
+        final byte[] urlHash;
+        final byte[] meta;
+        final double score;
+
+        RankedRecord(final byte[] urlHash, final byte[] meta, final double score) {
+            this.urlHash = urlHash;
+            this.meta = meta;
+            this.score = score;
+        }
+    }
 
     public RocksDBIndexCellBackend(final File dbPath) {
         this.store = new WordUrlRefStore(dbPath);
         this.factory = new WordReferenceFactory();
         this.termOrder = Base64Order.enhancedCoder;
+        this.runtimeTopKEnabled = configBool(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED_DEFAULT);
+        this.runtimeTopK = Math.max(1, configInt(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K_DEFAULT));
+        this.runtimeSoftCap = Math.max(this.runtimeTopK, configInt(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP_DEFAULT));
+        this.runtimeMaxPerHost = Math.max(1, configInt(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST_DEFAULT));
+        this.syncWrites = configBool("rwi.rocksdb.syncWrites", true);
+
+        this.store.setDisableWAL(!this.syncWrites);
+
+        ConcurrentLog.info("RocksDBIndexCellBackend", "runtimeTopK: enabled=" + this.runtimeTopKEnabled +
+                ", k=" + this.runtimeTopK +
+                ", softCap=" + this.runtimeSoftCap +
+            ", maxPerHost=" + this.runtimeMaxPerHost +
+            ", syncWrites=" + this.syncWrites);
         
         // Einmaliger automatischer Import von alten Kelondro BLOB-Dateien
         tryImportKelondroBlobs(dbPath);
     }
 
+    private static boolean configBool(final String key, final boolean defaultValue) {
+        final Switchboard sb = Switchboard.getSwitchboard();
+        if (sb != null) {
+            return sb.getConfigBool(key, defaultValue);
+        }
+        return Boolean.parseBoolean(System.getProperty(key, Boolean.toString(defaultValue)));
+    }
+
+    private static int configInt(final String key, final int defaultValue) {
+        final Switchboard sb = Switchboard.getSwitchboard();
+        if (sb != null) {
+            return sb.getConfigInt(key, defaultValue);
+        }
+        final String value = System.getProperty(key);
+        if (value == null || value.isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (final NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    public static Map<String, Long> runtimeTopKStatsSnapshot() {
+        final Map<String, Long> stats = new HashMap<String, Long>();
+        stats.put("addCalls", runtimeAddCalls.get());
+        stats.put("passDisabled", runtimePassDisabled.get());
+        stats.put("passBelowSoftCap", runtimePassBelowSoftCap.get());
+        stats.put("rebalanceRuns", runtimeRebalanceRuns.get());
+        stats.put("candidates", runtimeCandidates.get());
+        stats.put("selected", runtimeSelected.get());
+        stats.put("dropped", runtimeDropped.get());
+        return stats;
+    }
+
     private void tryImportKelondroBlobs(final File dbPath) {
+        final boolean autoImport = configBool("index.rocksdb.import.auto", true);
+        if (!autoImport) {
+            return;
+        }
+
         // Marker-Datei verhindert wiederholten Import
         final File importMarker = new File(dbPath, ".kelondro_imported");
         if (importMarker.exists()) {
@@ -77,9 +170,13 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
             // Import durchführen mit deaktiviertem WAL für bessere Performance
             ConcurrentLog.info("RocksDBIndexCellBackend", "starting import of " + blobFiles.length 
                 + " Kelondro BLOB files from " + kelondroHeapDir);
+
+            final boolean importDisableWal = configBool("rwi.rocksdb.import.disableWal", true);
             
             // Disable WAL during bulk import
-            this.store.setDisableWAL(true);
+            if (importDisableWal) {
+                this.store.setDisableWAL(true);
+            }
             
             final long startTime = System.currentTimeMillis();
             final long importedRefs = WordUrlBlobImportJob.importBlobDirectory(
@@ -92,7 +189,7 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
             final long duration = System.currentTimeMillis() - startTime;
             
             // Re-enable WAL after import
-            this.store.setDisableWAL(false);
+            this.store.setDisableWAL(!this.syncWrites);
             
             ConcurrentLog.info("RocksDBIndexCellBackend", "imported " + importedRefs 
                 + " references from Kelondro BLOBs in " + (duration / 1000) + "s");
@@ -110,23 +207,163 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
         if (newEntries == null) return;
         final byte[] wordHash = newEntries.getTermHash();
         final Iterator<WordReference> iterator = newEntries.entries();
-        final List<WordUrlRefRecord> records = new ArrayList<WordUrlRefRecord>();
+        final List<WordReference> entries = new ArrayList<WordReference>();
         while (iterator.hasNext()) {
             final WordReference entry = iterator.next();
             if (entry == null) continue;
-            final byte[] urlHash = entry.urlhash();
-            final byte[] meta = entry.toKelondroEntry().bytes();
-            records.add(new WordUrlRefRecord(wordHash, urlHash, meta));
+            entries.add(entry);
         }
-        this.store.upsertBatch(records);
+        upsertWithRuntimeGuard(wordHash, entries);
+    }
+
+    private void upsertWithRuntimeGuard(final byte[] termHash, final List<WordReference> entries) {
+        if (termHash == null || entries == null || entries.isEmpty()) return;
+        runtimeAddCalls.incrementAndGet();
+
+        final List<WordUrlRefRecord> incomingRecords = new ArrayList<WordUrlRefRecord>(entries.size());
+        for (final WordReference entry : entries) {
+            if (entry == null || entry.urlhash() == null) continue;
+            incomingRecords.add(new WordUrlRefRecord(termHash, entry.urlhash(), entry.toKelondroEntry().bytes()));
+        }
+        if (incomingRecords.isEmpty()) return;
+
+        if (!this.runtimeTopKEnabled) {
+            runtimePassDisabled.incrementAndGet();
+            this.store.upsertBatch(incomingRecords);
+            return;
+        }
+
+        final int existingApprox = this.store.scanWord(termHash, this.runtimeSoftCap + 1).size();
+        if (existingApprox + incomingRecords.size() <= this.runtimeSoftCap) {
+            runtimePassBelowSoftCap.incrementAndGet();
+            this.store.upsertBatch(incomingRecords);
+            return;
+        }
+
+        // Rebalance this heavy term: merge existing + incoming, then keep runtimeTopK with host diversity
+        final List<WordUrlRefRecord> existing = this.store.scanWord(termHash, 0);
+        final Map<ByteArray, RankedRecord> merged = new LinkedHashMap<ByteArray, RankedRecord>(existing.size() + incomingRecords.size());
+
+        for (final WordUrlRefRecord rec : existing) {
+            final double score = computeScoreFromMeta(rec.meta());
+            merged.put(new ByteArray(rec.urlHash().clone()), new RankedRecord(rec.urlHash(), rec.meta(), score));
+        }
+
+        for (int i = 0; i < incomingRecords.size(); i++) {
+            final WordUrlRefRecord rec = incomingRecords.get(i);
+            final WordReference entry = i < entries.size() ? entries.get(i) : null;
+            final double score = entry == null ? computeScoreFromMeta(rec.meta()) : computeScore(entry);
+            final ByteArray urlKey = new ByteArray(rec.urlHash().clone());
+            final RankedRecord existingRecord = merged.get(urlKey);
+            if (existingRecord == null || existingRecord.score <= score) {
+                merged.put(urlKey, new RankedRecord(rec.urlHash(), rec.meta(), score));
+            }
+        }
+
+        final List<RankedRecord> selected = selectTopKWithHostDiversity(new ArrayList<RankedRecord>(merged.values()), this.runtimeTopK, this.runtimeMaxPerHost);
+        runtimeRebalanceRuns.incrementAndGet();
+        runtimeCandidates.addAndGet(merged.size());
+        runtimeSelected.addAndGet(selected.size());
+        runtimeDropped.addAndGet(Math.max(0, merged.size() - selected.size()));
+
+        final List<WordUrlRefRecord> rewritten = new ArrayList<WordUrlRefRecord>(selected.size());
+        for (final RankedRecord record : selected) {
+            rewritten.add(new WordUrlRefRecord(termHash, record.urlHash, record.meta));
+        }
+
+        this.store.deleteWord(termHash);
+        this.store.upsertBatch(rewritten);
     }
 
     @Override
     public void add(final byte[] termHash, final WordReference entry) throws IOException, SpaceExceededException {
         if (termHash == null || entry == null) return;
-        final byte[] urlHash = entry.urlhash();
-        final byte[] meta = entry.toKelondroEntry().bytes();
-        store.upsert(termHash, urlHash, meta);
+        final List<WordReference> entries = new ArrayList<WordReference>(1);
+        entries.add(entry);
+        upsertWithRuntimeGuard(termHash, entries);
+    }
+
+    private double computeScoreFromMeta(final byte[] meta) {
+        try {
+            final WordReference reference = this.factory.produceSlow(this.factory.getRow().newEntry(meta));
+            return computeScore(reference);
+        } catch (final Throwable ignored) {
+            return 0.0;
+        }
+    }
+
+    private double computeScore(final WordReference reference) {
+        if (reference == null) return 0.0;
+
+        final int hitcount = Math.max(1, reference.hitcount());
+        final int wordsInText = Math.max(1, reference.wordsintext());
+        final int posInText = Math.max(0, reference.posintext());
+        final int wordsInTitle = Math.max(0, reference.wordsintitle());
+        final int outlinks = Math.max(0, reference.llocal()) + Math.max(0, reference.lother());
+
+        double score = 0.0;
+
+        // 1) BM25-like TF normalization (hitcount / docLength)
+        final double k1 = 1.2;
+        final double b = 0.75;
+        final double avgDocLength = 500.0;
+        final double normalization = (1.0 - b) + b * (wordsInText / avgDocLength);
+        score += (hitcount * (k1 + 1.0)) / (hitcount + k1 * normalization);
+
+        // 2) Position bonus (earlier in text = higher)
+        score += 3.0 / (1.0 + Math.log1p(posInText));
+
+        // 3) Freshness bonus (younger = higher, soft 10-year decay)
+        final long now = System.currentTimeMillis();
+        final long ageDays = Math.max(0L, (now - reference.lastModified()) / 86_400_000L);
+        final double freshness = Math.max(0.0, 1.0 - (ageDays / 3650.0));
+        score += freshness * 3.0;
+
+        // 4) Title bonus
+        if (wordsInTitle > 0) {
+            score += 2.0;
+        }
+
+        // 5) Quality signal (more outlinks = better, bounded)
+        score += Math.min(2.0, Math.log1p(outlinks) * 0.5);
+
+        return score;
+    }
+
+    private List<RankedRecord> selectTopKWithHostDiversity(final List<RankedRecord> candidates, final int topK, final int maxPerHost) {
+        if (candidates == null || candidates.isEmpty()) return Collections.emptyList();
+
+        candidates.sort((a, b) -> Double.compare(b.score, a.score));
+
+        final List<RankedRecord> selected = new ArrayList<RankedRecord>(Math.min(topK, candidates.size()));
+        final List<RankedRecord> overflow = new ArrayList<RankedRecord>();
+        final Map<String, Integer> hostCounts = new HashMap<String, Integer>();
+
+        for (final RankedRecord candidate : candidates) {
+            if (selected.size() >= topK) break;
+            final String host = hostKey(candidate.urlHash);
+            final int count = hostCounts.getOrDefault(host, 0);
+            if (count < maxPerHost) {
+                selected.add(candidate);
+                hostCounts.put(host, count + 1);
+            } else {
+                overflow.add(candidate);
+            }
+        }
+
+        if (selected.size() < topK) {
+            for (final RankedRecord candidate : overflow) {
+                selected.add(candidate);
+                if (selected.size() >= topK) break;
+            }
+        }
+
+        return selected;
+    }
+
+    private String hostKey(final byte[] urlHash) {
+        if (urlHash == null || urlHash.length < 12) return "unknown";
+        return ASCII.String(urlHash, 6, 6);
     }
 
     @Override
