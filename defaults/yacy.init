@@ -1079,6 +1079,90 @@ indexDistribution.maxChunkFails = 1
 # a value of e.g. 100000 can improve stability and reduce load while searching very popular words
 index.maxReferences = 0
 
+# RocksDB activation for RWI (primary key)
+index.rocksdb.enabled = true
+
+# Runtime Top-K guard for RocksDB RWI (write-path maintenance)
+# keep this enabled to limit heavy terms continuously during operation
+index.rwi.runtimeTopK.enabled = true
+# number of references to keep per term
+index.rwi.runtimeTopK.k = 1000
+# trigger threshold for rebalancing a term during writes (should be >= k)
+index.rwi.runtimeTopK.softCap = 1200
+# host diversity cap inside Top-K selection
+index.rwi.runtimeTopK.maxPerHost = 3
+
+# Crawl stack backend (HostBalancer=false / RocksDB=true)
+# can still be overridden with JVM flag: -Drocksdb.balancer=true
+rocksdb.balancer = true
+
+# RocksDB write durability behavior for RWI updates
+# true  = WAL enabled (safer, slower)
+# false = WAL disabled (faster, less durable on crash)
+rwi.rocksdb.syncWrites = false
+
+# Automatic import of legacy Kelondro text.index.*.blob files on first RocksDB startup
+index.rocksdb.import.auto = true
+
+# During import, temporarily disable WAL for speed
+rwi.rocksdb.import.disableWal = true
+
+# -----------------------------------------------------------------------------
+# RocksDB tuning (active parameters used in current code)
+# -----------------------------------------------------------------------------
+# Index RWI store tuning (WordUrlRefStore)
+# Block cache size in MB (minimum effective value is 64)
+index.rocksdb.blockCacheMB = 256
+# Memtable write buffer size in MB (minimum effective value is 16)
+index.rocksdb.writeBufferMB = 128
+# Number of memtable buffers before flush/compaction (minimum effective value is 2)
+index.rocksdb.maxWriteBufferNumber = 4
+# Background compaction/flush jobs (minimum effective value is 2)
+index.rocksdb.maxBackgroundJobs = 4
+# Maximum number of open RocksDB files (-1 = keep all files open)
+index.rocksdb.maxOpenFiles = 64
+# Max URL references in RAM cache before forced flush
+index.rocksdb.maxRamReferences = 10000000
+# LRU dedup cache size for already written word keys
+index.rocksdb.writtenWordsCacheSize = 200000
+
+# Crawl stack RocksDB tuning (RocksDBCrawlStacks)
+rocksdb.crawl.blockCacheMB = 64
+rocksdb.crawl.writeBufferMB = 32
+rocksdb.crawl.maxWriteBufferNumber = 3
+rocksdb.crawl.maxBackgroundJobs = 4
+
+# RocksDB Balancer tuning (RocksDBBalancer)
+rocksdb.balancer.blockCacheMB = 32
+rocksdb.balancer.writeBufferMB = 24
+rocksdb.balancer.maxWriteBufferNumber = 3
+rocksdb.balancer.maxBackgroundJobs = 2
+
+# -----------------------------------------------------------------------------
+# Recommended presets for large instances (documentation only)
+# -----------------------------------------------------------------------------
+# Stable/safer profile (recommended default):
+#   index.rocksdb.enabled=true
+#   index.rwi.runtimeTopK.enabled=true
+#   index.rwi.runtimeTopK.k=1000
+#   index.rwi.runtimeTopK.softCap=1200
+#   index.rwi.runtimeTopK.maxPerHost=3
+#   rwi.rocksdb.syncWrites=true
+#
+# Performance profile (higher throughput, less crash safety):
+#   index.rocksdb.enabled=true
+#   index.rwi.runtimeTopK.enabled=true
+#   index.rwi.runtimeTopK.k=1000
+#   index.rwi.runtimeTopK.softCap=1200
+#   index.rwi.runtimeTopK.maxPerHost=3
+#   rwi.rocksdb.syncWrites=false
+#
+# Notes:
+# - Keep softCap >= k, typical: softCap = k + 10..30%
+# - For remote search use-cases, k=1000 is usually sufficient
+# - On very diverse corpora you may raise maxPerHost to 4..6
+
+
 # Search sequence settings
 # collection:
 # time = time to get a RWI out of RAM cache, assortments and WORDS files

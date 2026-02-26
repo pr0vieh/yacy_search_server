@@ -50,6 +50,7 @@ import net.yacy.crawler.robots.RobotsTxt;
 import net.yacy.kelondro.data.word.Word;
 import net.yacy.kelondro.index.RowHandleSet;
 import net.yacy.kelondro.util.MemoryControl;
+import net.yacy.search.Switchboard;
 
 public class NoticedURL {
 
@@ -79,7 +80,7 @@ public class NoticedURL {
         this.cachePath = cachePath;
         
         // Check if RocksDB-based stacks should be used
-        final boolean useRocksDBStacks = Boolean.parseBoolean(System.getProperty("rocksdb.balancer", "false"));
+        final boolean useRocksDBStacks = useRocksDBStacks();
         
         if (useRocksDBStacks) {
             try {
@@ -130,7 +131,7 @@ public class NoticedURL {
             ConcurrentLog.info("NoticedURL", "opening CrawlerRemoteStacks..");
             
             // Check if using RocksDB stacks
-            final boolean useRocksDBStacks = Boolean.parseBoolean(System.getProperty("rocksdb.balancer", "false"));
+            final boolean useRocksDBStacks = useRocksDBStacks();
             
             if (useRocksDBStacks && this.coreStack instanceof RocksDBStackAdapter) {
                 try {
@@ -153,6 +154,16 @@ public class NoticedURL {
     	if (this.limitStack != null) this.limitStack.clear();
     	if (this.remoteStack != null) this.remoteStack.clear();
     	if (this.noloadStack != null) this.noloadStack.clear();
+    }
+
+    private static boolean useRocksDBStacks() {
+        // System property has priority for explicit startup overrides
+        final String jvmValue = System.getProperty("rocksdb.balancer");
+        if (jvmValue != null) {
+            return Boolean.parseBoolean(jvmValue);
+        }
+        final Switchboard sb = Switchboard.getSwitchboard();
+        return sb != null && sb.getConfigBool("rocksdb.balancer", false);
     }
 
     protected void close() {

@@ -35,6 +35,7 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.PatternSyntaxException;
 
 import net.yacy.cora.date.GenericFormatter;
@@ -65,6 +66,7 @@ import net.yacy.kelondro.util.FileUtils;
 import net.yacy.peers.DHTSelection;
 import net.yacy.peers.Protocol;
 import net.yacy.peers.Seed;
+import net.yacy.rocksdb.RocksDBIndexCellBackend;
 import net.yacy.repository.Blacklist;
 import net.yacy.repository.Blacklist.BlacklistType;
 import net.yacy.repository.BlacklistHostAndPath;
@@ -171,6 +173,16 @@ public class IndexControlRWIs_p {
                     ReferenceContainer.maxReferences = 0;
                 }
                 sb.setConfig("index.maxReferences", ReferenceContainer.maxReferences);
+
+                final boolean runtimeTopKEnabled = post.getBoolean("runtimeTopKEnabled");
+                final int runtimeTopK = Math.max(1, post.getInt("runtimeTopK", SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K_DEFAULT));
+                final int runtimeSoftCap = Math.max(runtimeTopK, post.getInt("runtimeSoftCap", SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP_DEFAULT));
+                final int runtimeMaxPerHost = Math.max(1, post.getInt("runtimeMaxPerHost", SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST_DEFAULT));
+
+                sb.setConfig(SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED, runtimeTopKEnabled);
+                sb.setConfig(SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K, runtimeTopK);
+                sb.setConfig(SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP, runtimeSoftCap);
+                sb.setConfig(SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST, runtimeMaxPerHost);
             }
 
             // delete word
@@ -486,6 +498,26 @@ public class IndexControlRWIs_p {
         prop.putNum("wcount", segment.RWICount());
         prop.put("limitations_maxReferencesRadioChecked", ReferenceContainer.maxReferences > 0 ? 1 : 0);
         prop.put("limitations_maxReferences", ReferenceContainer.maxReferences > 0 ? ReferenceContainer.maxReferences : 100000);
+        prop.put("limitations_runtimeTopKEnabledChecked", sb.getConfigBool(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED_DEFAULT) ? 1 : 0);
+        prop.put("limitations_runtimeTopK", sb.getConfigInt(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K_DEFAULT));
+        prop.put("limitations_runtimeSoftCap", sb.getConfigInt(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP_DEFAULT));
+        prop.put("limitations_runtimeMaxPerHost", sb.getConfigInt(
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST,
+            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST_DEFAULT));
+        final Map<String, Long> runtimeStats = RocksDBIndexCellBackend.runtimeTopKStatsSnapshot();
+        prop.putNum("limitations_runtimeStats_addCalls", runtimeStats.get("addCalls"));
+        prop.putNum("limitations_runtimeStats_passDisabled", runtimeStats.get("passDisabled"));
+        prop.putNum("limitations_runtimeStats_passBelowSoftCap", runtimeStats.get("passBelowSoftCap"));
+        prop.putNum("limitations_runtimeStats_rebalanceRuns", runtimeStats.get("rebalanceRuns"));
+        prop.putNum("limitations_runtimeStats_candidates", runtimeStats.get("candidates"));
+        prop.putNum("limitations_runtimeStats_selected", runtimeStats.get("selected"));
+        prop.putNum("limitations_runtimeStats_dropped", runtimeStats.get("dropped"));
 
         // return rewrite properties
         return prop;

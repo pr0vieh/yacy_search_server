@@ -162,9 +162,25 @@ public class Segment {
         if (rocksdbFlag != null) {
             useRocksDB = "true".equalsIgnoreCase(rocksdbFlag.trim());
         } else {
+            final String legacyIndexRocksdb = System.getProperty("index.rocksdb");
+            if (legacyIndexRocksdb != null) {
+                useRocksDB = "true".equalsIgnoreCase(legacyIndexRocksdb.trim());
+            }
+        }
+
+        if (!useRocksDB) {
+            final String legacyRwiRocksdb = System.getProperty("rwi.rocksdb");
+            if (legacyRwiRocksdb != null) {
+                useRocksDB = "true".equalsIgnoreCase(legacyRwiRocksdb.trim());
+            }
+        }
+
+        if (!useRocksDB) {
             final Switchboard sb = Switchboard.getSwitchboard();
             if (sb != null) {
-                useRocksDB = sb.getConfigBool("index.rocksdb.enabled", false);
+                useRocksDB = sb.getConfigBool("index.rocksdb.enabled", false)
+                        || sb.getConfigBool("index.rocksdb", false)
+                        || sb.getConfigBool("rwi.rocksdb", false);
             }
         }
 
