@@ -32,7 +32,6 @@ import net.yacy.cora.protocol.RequestHeader;
 import net.yacy.cora.sorting.Rating;
 import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.kelondro.data.word.WordReference;
-import net.yacy.kelondro.rwi.IndexCell;
 import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.search.Switchboard;
 import net.yacy.search.index.Segment;
@@ -61,37 +60,36 @@ public class termlist_p {
         final IndexCellBackend<WordReference> termIndex = segment.termIndex();
         int rowsize = 0;
         if(termIndex != null) {
-        	rowsize = termIndex.referenceRow().objectsize;
-        	try {
-        		final Iterator<Rating<byte[]>> i = termIndex.referenceCountIterator(null, false, false);
-        		while (i.hasNext()) {
-        			e = i.next();
-        			termnumber++;
-        			count = e.getScore();
-        			if (count >= 1000) over1000++;
-        			if (count >= 10000) over10000++;
-        			if (count >= 100000) over100000++;
-        			if (count >= 1000000) over1000000++;
-        			if (count >= 10000000) over10000000++;
-        			if (count >= 100000000) over100000000++;
-        			if (count > maxcount) {
-        				maxcount = count;
-        				maxterm = e.getObject();
-        			}
-        			if (count < mincount) continue;
-        			termhash = e.getObject();
-        			if (delete) deleteterms.add(termhash);
-        			hstring = ASCII.String(termhash);
-        			mem = 20 + count * rowsize;
-        			prop.put("terms_" + c + "_termhash", hstring);
-        			prop.put("terms_" + c + "_count", count);
-        			prop.put("terms_" + c + "_memory", mem);
-        			c++;
-        			totalmemory += mem;
-        		}
-        	} catch (final IOException e1) {
-        		log.warn("Error getting term iterator", e1);
-        	}
+            rowsize = termIndex.referenceRow().objectsize;
+            try {
+                final Iterator<Rating<byte[]>> i = termIndex.referenceCountIterator(null, false, false);
+                while (i.hasNext()) {
+            	    e = i.next();
+            	    termnumber++;
+            	    count = e.getScore();
+            	    if (count >= 1000) over1000++;
+            	    if (count >= 10000) over10000++;
+            	    if (count >= 100000) over100000++;
+            	    if (count >= 1000000) over1000000++;
+            	    if (count >= 10000000) over10000000++;
+            	    if (count >= 100000000) over100000000++;
+            	    if (count > maxcount) {
+            	    	maxcount = count;
+            	    	maxterm = e.getObject();
+            	    }
+            	    if (count < mincount) continue;
+            	    termhash = e.getObject();
+            	    if (delete) deleteterms.add(termhash);
+            	    hstring = ASCII.String(termhash);
+            	    mem = 20 + count * rowsize;
+            	    prop.put("terms_" + c + "_termhash", hstring);
+            	    prop.put("terms_" + c + "_count", count);
+            	    prop.put("terms_" + c + "_memory", mem);
+            	    c++;
+            	    totalmemory += mem;
+                }
+            } catch (final IOException ignored) {
+            }
         	if (delete) {
         		for (final byte[] t: deleteterms) {
         			try {

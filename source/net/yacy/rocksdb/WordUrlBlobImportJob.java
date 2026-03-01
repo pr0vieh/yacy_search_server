@@ -17,13 +17,29 @@ public final class WordUrlBlobImportJob {
     public static long importBlobDirectory(final File heapDir,
                                            final String prefix,
                                            final int keyLength,
-                                           final WordUrlRefStore store,
+                                           final WordUrlRefStorage store,
                                            final int batchSize) throws IOException {
+        return importBlobDirectory(heapDir, prefix, keyLength, store, batchSize, 0, 3);
+    }
+
+    public static long importBlobDirectory(final File heapDir,
+                                           final String prefix,
+                                           final int keyLength,
+                                           final WordUrlRefStorage store,
+                                           final int batchSize,
+                                           final int topK,
+                                           final int maxPerHost) throws IOException {
         final List<File> blobs = listBlobFiles(heapDir, prefix);
         long refs = 0L;
 
         for (final File blob : blobs) {
-            final long importedRefs = WordUrlBlobImporter.importBlobFile(blob, keyLength, store, batchSize);
+            final long importedRefs = WordUrlBlobImporter.importBlobFile(
+                    blob,
+                    keyLength,
+                    store,
+                    batchSize,
+                    topK,
+                    maxPerHost);
             refs += importedRefs;
             archiveImportedBlob(blob);
         }

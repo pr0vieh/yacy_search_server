@@ -4,13 +4,20 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.TreeMap;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.rocksdb.RocksIterator;
@@ -35,16 +42,22 @@ import net.yacy.kelondro.data.word.WordReference;
 import net.yacy.kelondro.data.word.WordReferenceFactory;
 import net.yacy.kelondro.rwi.TermSearch;
 import net.yacy.search.Switchboard;
-import net.yacy.search.SwitchboardConstants;
 
 public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> {
-    private final WordUrlRefStore store;
+    private final WordUrlRefStorage store;
     private final WordReferenceFactory factory;
     private final ByteOrder termOrder;
     private final boolean runtimeTopKEnabled;
     private final int runtimeTopK;
     private final int runtimeSoftCap;
     private final int runtimeMaxPerHost;
+    private final int runtimeTermCountCacheSize;
+    private final int runtimeRebalanceQueueSize;
+    private final Map<ByteArray, Integer> runtimeTermCountCache;
+    private final BlockingQueue<byte[]> runtimeRebalanceQueue;
+    private final Set<ByteArray> runtimeRebalancePending;
+    private final Thread runtimeRebalanceThread;
+    private volatile boolean runtimeRebalanceRun;
     private final boolean syncWrites;
 
     private static final AtomicLong runtimeAddCalls = new AtomicLong(0L);
@@ -68,21 +81,45 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
     }
 
     public RocksDBIndexCellBackend(final File dbPath) {
-        this.store = new WordUrlRefStore(dbPath);
+        final String storageMode = configString("index.rocksdb.storage.mode", "posting");
+        this.store = WordUrlRefStorageFactory.create(dbPath, storageMode);
         this.factory = new WordReferenceFactory();
         this.termOrder = Base64Order.enhancedCoder;
         this.runtimeTopKEnabled = configBool(
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED,
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_ENABLED_DEFAULT);
+            "index.rwi.runtimeTopK.enabled",
+            true);
         this.runtimeTopK = Math.max(1, configInt(
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K,
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_K_DEFAULT));
+            "index.rwi.runtimeTopK.k",
+            1000));
         this.runtimeSoftCap = Math.max(this.runtimeTopK, configInt(
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP,
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_SOFTCAP_DEFAULT));
+            "index.rwi.runtimeTopK.softCap",
+            1200));
         this.runtimeMaxPerHost = Math.max(1, configInt(
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST,
-            SwitchboardConstants.INDEX_RWI_RUNTIME_TOPK_MAXPERHOST_DEFAULT));
+            "index.rwi.runtimeTopK.maxPerHost",
+            3));
+        this.runtimeTermCountCacheSize = Math.max(10_000, configInt("index.rwi.runtimeTopK.termCountCacheSize", 200_000));
+        this.runtimeRebalanceQueueSize = Math.max(1_000, configInt("index.rwi.runtimeTopK.rebalanceQueueSize", 50_000));
+        this.runtimeTermCountCache = Collections.synchronizedMap(new LinkedHashMap<ByteArray, Integer>(16_384, 0.75f, true) {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<ByteArray, Integer> eldest) {
+                return size() > RocksDBIndexCellBackend.this.runtimeTermCountCacheSize;
+            }
+        });
+        this.runtimeRebalanceQueue = new LinkedBlockingQueue<byte[]>(this.runtimeRebalanceQueueSize);
+        this.runtimeRebalancePending = Collections.newSetFromMap(new ConcurrentHashMap<ByteArray, Boolean>());
+        this.runtimeRebalanceRun = this.runtimeTopKEnabled;
+        this.runtimeRebalanceThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runtimeRebalanceLoop();
+            }
+        }, "RWI-TopK-Rebalance");
+        this.runtimeRebalanceThread.setDaemon(true);
+        if (this.runtimeRebalanceRun) {
+            this.runtimeRebalanceThread.start();
+        }
         this.syncWrites = configBool("rwi.rocksdb.syncWrites", true);
 
         this.store.setDisableWAL(!this.syncWrites);
@@ -91,7 +128,10 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
                 ", k=" + this.runtimeTopK +
                 ", softCap=" + this.runtimeSoftCap +
             ", maxPerHost=" + this.runtimeMaxPerHost +
-            ", syncWrites=" + this.syncWrites);
+            ", termCountCacheSize=" + this.runtimeTermCountCacheSize +
+            ", rebalanceQueueSize=" + this.runtimeRebalanceQueueSize +
+            ", syncWrites=" + this.syncWrites +
+            ", storageMode=" + this.store.mode());
         
         // Einmaliger automatischer Import von alten Kelondro BLOB-Dateien
         tryImportKelondroBlobs(dbPath);
@@ -119,6 +159,19 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
         } catch (final NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    private static String configString(final String key, final String defaultValue) {
+        final Switchboard sb = Switchboard.getSwitchboard();
+        if (sb != null) {
+            final String value = sb.getConfig(key, defaultValue);
+            return value == null ? defaultValue : value;
+        }
+        final String value = System.getProperty(key);
+        if (value == null || value.isEmpty()) {
+            return defaultValue;
+        }
+        return value;
     }
 
     public static Map<String, Long> runtimeTopKStatsSnapshot() {
@@ -179,12 +232,20 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
             }
             
             final long startTime = System.currentTimeMillis();
+            final int importTopK = Math.max(1, this.runtimeTopK);
+            final int importMaxPerHost = Math.max(1, this.runtimeMaxPerHost);
+
+            ConcurrentLog.info("RocksDBIndexCellBackend", "Kelondro import filters: topK=" + importTopK
+                    + ", maxPerHost=" + importMaxPerHost);
+
             final long importedRefs = WordUrlBlobImportJob.importBlobDirectory(
                 kelondroHeapDir, 
                 "text.index", 
                 Word.commonHashLength, 
                 this.store, 
-                50_000
+                50_000,
+                importTopK,
+                importMaxPerHost
             );
             final long duration = System.currentTimeMillis() - startTime;
             
@@ -216,7 +277,7 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
         upsertWithRuntimeGuard(wordHash, entries);
     }
 
-    private void upsertWithRuntimeGuard(final byte[] termHash, final List<WordReference> entries) {
+    private void upsertWithRuntimeGuard(final byte[] termHash, final List<WordReference> entries) throws IOException {
         if (termHash == null || entries == null || entries.isEmpty()) return;
         runtimeAddCalls.incrementAndGet();
 
@@ -233,46 +294,108 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
             return;
         }
 
-        final int existingApprox = this.store.scanWord(termHash, this.runtimeSoftCap + 1).size();
-        if (existingApprox + incomingRecords.size() <= this.runtimeSoftCap) {
+        final ByteArray termKey = new ByteArray(termHash.clone());
+        Integer existingApproxObj = this.runtimeTermCountCache.get(termKey);
+        final int existingApprox;
+        if (existingApproxObj == null) {
+            // Fast path: avoid expensive DB scan for cache miss.
+            // Rebalance thread will correct oversized terms asynchronously when needed.
+            existingApprox = 0;
+            this.runtimeTermCountCache.put(termKey, Integer.valueOf(existingApprox));
+        } else {
+            existingApprox = existingApproxObj.intValue();
+        }
+
+        this.store.upsertBatch(incomingRecords);
+
+        final int estimatedAfter = Math.max(0, existingApprox + incomingRecords.size());
+        this.runtimeTermCountCache.put(termKey, Integer.valueOf(estimatedAfter));
+        if (estimatedAfter <= this.runtimeSoftCap) {
             runtimePassBelowSoftCap.incrementAndGet();
-            this.store.upsertBatch(incomingRecords);
             return;
         }
 
-        // Rebalance this heavy term: merge existing + incoming, then keep runtimeTopK with host diversity
-        final List<WordUrlRefRecord> existing = this.store.scanWord(termHash, 0);
-        final Map<ByteArray, RankedRecord> merged = new LinkedHashMap<ByteArray, RankedRecord>(existing.size() + incomingRecords.size());
+        enqueueRuntimeRebalance(termHash);
+    }
 
+    private void enqueueRuntimeRebalance(final byte[] termHash) {
+        if (termHash == null || termHash.length == 0 || !this.runtimeTopKEnabled) return;
+        final byte[] keyCopy = termHash.clone();
+        final ByteArray key = new ByteArray(keyCopy);
+        if (!this.runtimeRebalancePending.add(key)) {
+            return;
+        }
+        if (!this.runtimeRebalanceQueue.offer(keyCopy)) {
+            this.runtimeRebalancePending.remove(key);
+        }
+    }
+
+    private void runtimeRebalanceLoop() {
+        while (this.runtimeRebalanceRun) {
+            try {
+                final byte[] termHash = this.runtimeRebalanceQueue.poll(1, TimeUnit.SECONDS);
+                if (termHash == null) continue;
+                final ByteArray key = new ByteArray(termHash.clone());
+                try {
+                    rebalanceTermIfHeavy(termHash);
+                } catch (final Throwable e) {
+                    ConcurrentLog.logException(e);
+                } finally {
+                    this.runtimeRebalancePending.remove(key);
+                }
+            } catch (final InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void rebalanceTermIfHeavy(final byte[] termHash) {
+        final List<WordUrlRefRecord> existing = this.store.scanWord(termHash, 0);
+        if (existing.isEmpty()) {
+            this.runtimeTermCountCache.put(new ByteArray(termHash.clone()), Integer.valueOf(0));
+            return;
+        }
+        if (existing.size() <= this.runtimeSoftCap) {
+            this.runtimeTermCountCache.put(new ByteArray(termHash.clone()), Integer.valueOf(existing.size()));
+            return;
+        }
+
+        final Map<ByteArray, RankedRecord> merged = new LinkedHashMap<ByteArray, RankedRecord>(existing.size());
         for (final WordUrlRefRecord rec : existing) {
             final double score = computeScoreFromMeta(rec.meta());
             merged.put(new ByteArray(rec.urlHash().clone()), new RankedRecord(rec.urlHash(), rec.meta(), score));
         }
 
-        for (int i = 0; i < incomingRecords.size(); i++) {
-            final WordUrlRefRecord rec = incomingRecords.get(i);
-            final WordReference entry = i < entries.size() ? entries.get(i) : null;
-            final double score = entry == null ? computeScoreFromMeta(rec.meta()) : computeScore(entry);
-            final ByteArray urlKey = new ByteArray(rec.urlHash().clone());
-            final RankedRecord existingRecord = merged.get(urlKey);
-            if (existingRecord == null || existingRecord.score <= score) {
-                merged.put(urlKey, new RankedRecord(rec.urlHash(), rec.meta(), score));
+        final List<RankedRecord> selected = selectTopKWithHostDiversity(new ArrayList<RankedRecord>(merged.values()), this.runtimeTopK, this.runtimeMaxPerHost);
+        final Set<ByteArray> keep = new HashSet<ByteArray>(selected.size());
+        for (final RankedRecord record : selected) {
+            keep.add(new ByteArray(record.urlHash.clone()));
+        }
+
+        int removed = 0;
+        for (final WordUrlRefRecord rec : existing) {
+            if (!keep.contains(new ByteArray(rec.urlHash().clone()))) {
+                try {
+                    if (this.store.delete(termHash, rec.urlHash())) {
+                        removed++;
+                    }
+                } catch (final IOException e) {
+                    ConcurrentLog.warn("RocksDBIndexCellBackend", "runtime rebalance delete failed", e);
+                }
             }
         }
 
-        final List<RankedRecord> selected = selectTopKWithHostDiversity(new ArrayList<RankedRecord>(merged.values()), this.runtimeTopK, this.runtimeMaxPerHost);
         runtimeRebalanceRuns.incrementAndGet();
         runtimeCandidates.addAndGet(merged.size());
         runtimeSelected.addAndGet(selected.size());
-        runtimeDropped.addAndGet(Math.max(0, merged.size() - selected.size()));
+        runtimeDropped.addAndGet(Math.max(0, removed));
 
-        final List<WordUrlRefRecord> rewritten = new ArrayList<WordUrlRefRecord>(selected.size());
-        for (final RankedRecord record : selected) {
-            rewritten.add(new WordUrlRefRecord(termHash, record.urlHash, record.meta));
+        final int nowApprox = Math.max(0, merged.size() - removed);
+        this.runtimeTermCountCache.put(new ByteArray(termHash.clone()), Integer.valueOf(nowApprox));
+        if (nowApprox > this.runtimeSoftCap) {
+            enqueueRuntimeRebalance(termHash);
         }
-
-        this.store.deleteWord(termHash);
-        this.store.upsertBatch(rewritten);
     }
 
     @Override
@@ -403,6 +526,9 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
     @Override
     public void delete(final byte[] termHash) throws IOException {
         this.store.deleteWord(termHash);
+        if (termHash != null) {
+            this.runtimeTermCountCache.remove(new ByteArray(termHash.clone()));
+        }
     }
 
     @Override
@@ -503,6 +629,15 @@ public class RocksDBIndexCellBackend implements IndexCellBackend<WordReference> 
     @Override
     public void close() {
         try {
+            this.runtimeRebalanceRun = false;
+            if (this.runtimeRebalanceThread != null) {
+                this.runtimeRebalanceThread.interrupt();
+                try {
+                    this.runtimeRebalanceThread.join(1000L);
+                } catch (final InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             this.store.close();
         } catch (final IOException e) {
         }

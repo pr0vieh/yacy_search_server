@@ -101,11 +101,10 @@ public final class WordUrlRefStore implements AutoCloseable {
         if (!dbPath.exists() && !dbPath.mkdirs()) {
             throw new IllegalArgumentException("cannot create db path: " + dbPath.getAbsolutePath());
         }
-        final long blockCacheMB = Long.getLong("index.rocksdb.blockCacheMB", 256L);
+        final long blockCacheMB = Long.getLong("index.rocksdb.blockCacheMB", 128L);  // CHANGED: default from 256 to 128 (more room for mmap)
         final long writeBufferMB = Long.getLong("index.rocksdb.writeBufferMB", 64L);
         final int maxWriteBufferNumber = Integer.getInteger("index.rocksdb.maxWriteBufferNumber", 4);
         final int maxBackgroundJobs = Integer.getInteger("index.rocksdb.maxBackgroundJobs", 4);
-        final int maxOpenFiles = Integer.getInteger("index.rocksdb.maxOpenFiles", 64);
 
         this.dbPath = dbPath;
         this.blockCache = new LRUCache(Math.max(64L, blockCacheMB) * 1024L * 1024L);
@@ -114,9 +113,9 @@ public final class WordUrlRefStore implements AutoCloseable {
         final BlockBasedTableConfig tableConfig = new BlockBasedTableConfig()
             .setBlockCache(this.blockCache)
             .setFilterPolicy(this.bloomFilter)
-            .setCacheIndexAndFilterBlocks(true)
-            .setCacheIndexAndFilterBlocksWithHighPriority(true)
-            .setPinTopLevelIndexAndFilter(true);
+            .setCacheIndexAndFilterBlocks(false)  // CHANGED: false to reduce aggressive mmap-pinning
+            .setCacheIndexAndFilterBlocksWithHighPriority(false)  // CHANGED: false to prevent high-priority memory pinning
+            .setPinTopLevelIndexAndFilter(false);  // CHANGED: false to prevent forcing index metadata into RAM
 
         this.dbOptions = new DBOptions()
             .setCreateIfMissing(true)
@@ -124,7 +123,7 @@ public final class WordUrlRefStore implements AutoCloseable {
             .setMaxBackgroundJobs(Math.max(2, maxBackgroundJobs))
             .setAdviseRandomOnOpen(true)  // ADDED: Tell O/S to avoid aggressive read-ahead on random access patterns
             .setUseFsync(false)  // ADDED: Use fdatasync instead of fsync for better performance (WAL still enabled)
-            .setMaxOpenFiles(maxOpenFiles)  // Configurable open files limit (-1 = keep all open)
+            .setMaxOpenFiles(64)  // CRITICAL: Limit to 64 open files - forces unmapping of old SST files automatically
             .setAllowMmapReads(true)  // ADDED: Allow mmap for READ performance on large indices (auto-unmapped by MaxOpenFiles limit)
             .setAllowMmapWrites(false);  // ADDED: Forbid mmap writes (keep writes to buffered I/O for predictability)
         this.cfOptions = new ColumnFamilyOptions()
@@ -176,7 +175,6 @@ public final class WordUrlRefStore implements AutoCloseable {
                 + ", writeBufferMB=" + Math.max(16L, writeBufferMB)
                 + ", maxWriteBufferNumber=" + Math.max(2, maxWriteBufferNumber)
                 + ", maxBackgroundJobs=" + Math.max(2, maxBackgroundJobs)
-            + ", maxOpenFiles=" + maxOpenFiles
                 + ", maxRamEntries=" + MAX_RAM_ENTRIES
                 + ", maxRamReferences=" + MAX_RAM_REFERENCES
                 + ", writtenWordsCacheSize=" + MAX_WRITTEN_WORDS_CACHE);
