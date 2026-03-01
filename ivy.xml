@@ -94,7 +94,7 @@
       <dependency org="org.slf4j" name="jcl-over-slf4j" rev="1.7.36"/>
       <dependency org="org.slf4j" name="log4j-over-slf4j" rev="1.7.36"/>
       <dependency org="org.slf4j" name="slf4j-jdk14" rev="1.7.36"/>
-      <dependency org="org.rocksdb" name="rocksdbjni" rev="9.10.0" />
+      <dependency org="org.rocksdb" name="rocksdbjni" rev="9.10.0"/>
       <!-- This does not match langdetect.jar from pre-ivy -->
       <dependency org="org.tukaani" name="xz" rev="1.8"/>
       <dependency org="oro" name="oro" rev="2.0.8"/>

@@ -1,15 +1,20 @@
 package net.yacy.tools;
 
+import java.io.IOException;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.Set;
 
 import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
@@ -24,6 +29,7 @@ import org.rocksdb.WriteOptions;
 
 import net.yacy.kelondro.data.word.WordReference;
 import net.yacy.kelondro.data.word.WordReferenceFactory;
+import net.yacy.kelondro.data.word.Word;
 
 /**
  * Top-K RWI Reorganization Tool with score-based ranking.
@@ -45,6 +51,8 @@ import net.yacy.kelondro.data.word.WordReferenceFactory;
 public class RwiTopKReorgTool {
 
     private static final WordReferenceFactory WORD_REFERENCE_FACTORY = new WordReferenceFactory();
+    private static final byte[] EMPTY_WORD_VALUE = new byte[0];
+    private static final byte[] WORDS_CF_NAME = "words".getBytes(StandardCharsets.UTF_8);
 
     static {
         RocksDB.loadLibrary();
@@ -75,12 +83,38 @@ public class RwiTopKReorgTool {
         final int k = Integer.parseInt(params.getOrDefault("k", "1000"));
         final boolean hostDiversity = Boolean.parseBoolean(params.getOrDefault("hostDiversity", "true"));
         final int maxPerHost = Integer.parseInt(params.getOrDefault("maxPerHost", "3"));
+        final boolean cleanStopwords = Boolean.parseBoolean(params.getOrDefault("cleanStopwords", "false"));
+        final String stopwordFiles = params.getOrDefault("stopwordFiles", "");
+        final boolean explicitLang = params.containsKey("lang");
+        final String language = params.get("lang");
         final boolean dryRun = params.containsKey("dryRun");
         final boolean apply = params.containsKey("apply");
+        final boolean rebuildWordsOnly = params.containsKey("rebuildWordsOnly");
+        final boolean cleanStopwordsOnly = params.containsKey("cleanStopwordsOnly");
+        final String wordsCfName = params.getOrDefault("wordsCf", "words");
         final String shadowDbPath = params.get("shadowDb");
+        final boolean needsStopwordHashes = cleanStopwords || cleanStopwordsOnly;
+        final String effectiveStopwordFiles;
+        if (needsStopwordHashes && (stopwordFiles == null || stopwordFiles.trim().isEmpty())) {
+            effectiveStopwordFiles = defaultSolrStopwordFiles(language, explicitLang);
+            System.out.println("No --stopwordFiles provided. Using Solr defaults: " + effectiveStopwordFiles);
+        } else {
+            effectiveStopwordFiles = stopwordFiles;
+        }
+        final Set<String> stopwordHashes = needsStopwordHashes ? loadStopwordHashes(effectiveStopwordFiles, wordBytes) : Collections.emptySet();
 
-        if (!dryRun && !apply) {
-            System.err.println("Specify either --dryRun or --apply");
+        if (needsStopwordHashes && stopwordHashes.isEmpty()) {
+            System.err.println("Stopword cleanup requested but no valid stopword hashes loaded. Provide --stopwordFiles=<file1,file2,...>");
+            return;
+        }
+
+        if (needsStopwordHashes) {
+            System.out.println("Stopword cleanup active: " + stopwordHashes.size() + " hashed stopwords loaded.");
+        }
+
+        final int modes = (dryRun ? 1 : 0) + (apply ? 1 : 0) + (rebuildWordsOnly ? 1 : 0) + (cleanStopwordsOnly ? 1 : 0);
+        if (modes != 1) {
+            System.err.println("Specify exactly one mode: --dryRun or --apply or --rebuildWordsOnly or --cleanStopwordsOnly");
             return;
         }
 
@@ -101,15 +135,53 @@ public class RwiTopKReorgTool {
         }
         final List<ColumnFamilyHandle> handles = new ArrayList<>();
 
-        try (DBOptions dbOptions = new DBOptions().setCreateIfMissing(false);
-             RocksDB db = RocksDB.openReadOnly(dbOptions, dbPath, descriptors, handles)) {
+        if (dryRun || apply) {
+            try (DBOptions dbOptions = new DBOptions().setCreateIfMissing(false);
+                 RocksDB db = RocksDB.openReadOnly(dbOptions, dbPath, descriptors, handles)) {
+
+                ColumnFamilyHandle sourceCf = null;
+                for (int i = 0; i < descriptors.size(); i++) {
+                    final String current = new String(descriptors.get(i).getName(), StandardCharsets.UTF_8);
+                    if (cfName.equals(current)) {
+                        sourceCf = handles.get(i);
+                        break;
+                    }
+                }
+
+                if (sourceCf == null) {
+                    System.err.println("CF not found: " + cfName);
+                    return;
+                }
+
+                if (dryRun) {
+                    dryRunAnalysis(db, sourceCf, dbPath, wordBytes, k, stopwordHashes);
+                } else {
+                    applyReorg(db, sourceCf, cfName, cfNames, wordBytes, k, hostDiversity, maxPerHost, shadowDbPath, stopwordHashes);
+                }
+
+            } finally {
+                for (final ColumnFamilyHandle handle : handles) {
+                    try { handle.close(); } catch (final Exception ignored) {}
+                }
+                for (final ColumnFamilyDescriptor descriptor : descriptors) {
+                    try { descriptor.getOptions().close(); } catch (final Exception ignored) {}
+                }
+            }
+            return;
+        }
+
+        try (DBOptions dbOptions = new DBOptions().setCreateIfMissing(false).setCreateMissingColumnFamilies(false);
+             RocksDB db = RocksDB.open(dbOptions, dbPath, descriptors, handles)) {
 
             ColumnFamilyHandle sourceCf = null;
+            ColumnFamilyHandle wordsCf = null;
             for (int i = 0; i < descriptors.size(); i++) {
                 final String current = new String(descriptors.get(i).getName(), StandardCharsets.UTF_8);
                 if (cfName.equals(current)) {
                     sourceCf = handles.get(i);
-                    break;
+                }
+                if (wordsCfName.equals(current)) {
+                    wordsCf = handles.get(i);
                 }
             }
 
@@ -118,10 +190,23 @@ public class RwiTopKReorgTool {
                 return;
             }
 
-            if (dryRun) {
-                dryRunAnalysis(db, sourceCf, dbPath, wordBytes, k);
+            if (wordsCf == null) {
+                if (rebuildWordsOnly) {
+                    try (final ColumnFamilyOptions wordsCfOptions = new ColumnFamilyOptions()) {
+                        wordsCf = db.createColumnFamily(new ColumnFamilyDescriptor(wordsCfName.getBytes(StandardCharsets.UTF_8), wordsCfOptions));
+                        handles.add(wordsCf);
+                        System.out.println("Words CF created: " + wordsCfName);
+                    }
+                }
+                if (wordsCf == null) {
+                    System.out.println("Words CF not found: " + wordsCfName + " (continuing with postings-only cleanup)");
+                }
+            }
+
+            if (rebuildWordsOnly) {
+                rebuildWordsCf(db, sourceCf, wordsCf, wordBytes);
             } else {
-                applyReorg(db, sourceCf, wordBytes, k, hostDiversity, maxPerHost, shadowDbPath);
+                cleanStopwordsInPlace(db, sourceCf, wordsCf, wordBytes, stopwordHashes);
             }
 
         } finally {
@@ -134,12 +219,132 @@ public class RwiTopKReorgTool {
         }
     }
 
+    private static void rebuildWordsCf(
+            final RocksDB db,
+            final ColumnFamilyHandle sourceCf,
+            final ColumnFamilyHandle wordsCf,
+            final int wordBytes) throws Exception {
+
+        System.out.println("=== REBUILD WORDS CF from postings ===");
+
+        long totalPostings = 0L;
+        long distinctWords = 0L;
+        byte[] currentWord = null;
+
+        try (WriteOptions wo = new WriteOptions().setDisableWAL(true);
+             WriteBatch batch = new WriteBatch();
+             RocksIterator it = db.newIterator(sourceCf)) {
+
+            it.seekToFirst();
+            while (it.isValid()) {
+                final byte[] key = it.key();
+                if (key.length >= wordBytes) {
+                    totalPostings++;
+                    final byte[] word = Arrays.copyOfRange(key, 0, wordBytes);
+                    if (currentWord == null || !Arrays.equals(currentWord, word)) {
+                        batch.put(wordsCf, word, EMPTY_WORD_VALUE);
+                        currentWord = word;
+                        distinctWords++;
+
+                        if (distinctWords % 20000 == 0) {
+                            db.write(wo, batch);
+                            batch.clear();
+                            System.out.println("Words rebuilt: " + distinctWords + ", postings scanned: " + totalPostings);
+                        }
+                    }
+                }
+                it.next();
+            }
+
+            if (batch.count() > 0) {
+                db.write(wo, batch);
+            }
+        }
+
+        System.out.println("=== WORDS CF Rebuild Complete ===");
+        System.out.println("Distinct words written: " + distinctWords);
+        System.out.println("Postings scanned: " + totalPostings);
+    }
+
+    private static void cleanStopwordsInPlace(
+            final RocksDB db,
+            final ColumnFamilyHandle sourceCf,
+            final ColumnFamilyHandle wordsCf,
+            final int wordBytes,
+            final Set<String> stopwordHashes) throws Exception {
+
+        System.out.println("=== CLEAN STOPWORDS ONLY (in-place) ===");
+
+        long scannedPostings = 0L;
+        long deletedPostings = 0L;
+        long deletedWords = 0L;
+        byte[] currentWord = null;
+        boolean currentWordIsStopword = false;
+
+        try (WriteOptions wo = new WriteOptions().setDisableWAL(true);
+             WriteBatch batch = new WriteBatch();
+             RocksIterator it = db.newIterator(sourceCf)) {
+
+            it.seekToFirst();
+            while (it.isValid()) {
+                final byte[] key = it.key();
+                if (key.length < wordBytes) {
+                    it.next();
+                    continue;
+                }
+
+                scannedPostings++;
+                final byte[] word = Arrays.copyOfRange(key, 0, wordBytes);
+                if (currentWord == null || !Arrays.equals(currentWord, word)) {
+                    if (currentWord != null && currentWordIsStopword) {
+                        deletedWords++;
+                        if (wordsCf != null) {
+                            batch.delete(wordsCf, currentWord);
+                        }
+                    }
+                    currentWord = word;
+                    currentWordIsStopword = isStopwordHash(word, stopwordHashes);
+                }
+
+                if (currentWordIsStopword) {
+                    batch.delete(sourceCf, key.clone());
+                    deletedPostings++;
+                }
+
+                if (batch.count() >= 50000) {
+                    db.write(wo, batch);
+                    batch.clear();
+                    System.out.println("Scanned postings: " + scannedPostings + ", deleted postings: " + deletedPostings + ", deleted words: " + deletedWords);
+                }
+
+                it.next();
+            }
+
+            if (currentWord != null && currentWordIsStopword) {
+                deletedWords++;
+                if (wordsCf != null) {
+                    batch.delete(wordsCf, currentWord);
+                }
+            }
+
+            if (batch.count() > 0) {
+                db.write(wo, batch);
+            }
+        }
+
+        System.out.println("=== STOPWORD CLEANUP COMPLETE ===");
+        System.out.println("Scanned postings: " + scannedPostings);
+        System.out.println("Deleted postings: " + deletedPostings + " (" + percent(deletedPostings, scannedPostings) + "%)");
+        System.out.println("Deleted words: " + deletedWords);
+    }
+
     private static void dryRunAnalysis(
             final RocksDB db,
             final ColumnFamilyHandle cf,
             final String dbPath,
             final int wordBytes,
-            final int k) {
+            final int k,
+            final Set<String> stopwordHashes) {
 
         System.out.println("=== DRY RUN: Top-K=" + k + " Projection ===");
 
@@ -148,6 +353,8 @@ public class RwiTopKReorgTool {
         long keptPostings = 0;
         long droppedPostings = 0;
         long cappedWords = 0;
+        long stopwordWords = 0;
+        long stopwordPostings = 0;
 
         byte[] currentWord = null;
         long currentCount = 0;
@@ -172,12 +379,18 @@ public class RwiTopKReorgTool {
                     totalWords++;
                     totalPostings += currentCount;
 
-                    if (currentCount > k) {
-                        cappedWords++;
-                        keptPostings += k;
-                        droppedPostings += (currentCount - k);
+                    if (isStopwordHash(currentWord, stopwordHashes)) {
+                        stopwordWords++;
+                        stopwordPostings += currentCount;
+                        droppedPostings += currentCount;
                     } else {
-                        keptPostings += currentCount;
+                        if (currentCount > k) {
+                            cappedWords++;
+                            keptPostings += k;
+                            droppedPostings += (currentCount - k);
+                        } else {
+                            keptPostings += currentCount;
+                        }
                     }
 
                     currentWord = word;
@@ -192,12 +405,18 @@ public class RwiTopKReorgTool {
         if (currentWord != null) {
             totalWords++;
             totalPostings += currentCount;
-            if (currentCount > k) {
-                cappedWords++;
-                keptPostings += k;
-                droppedPostings += (currentCount - k);
+            if (isStopwordHash(currentWord, stopwordHashes)) {
+                stopwordWords++;
+                stopwordPostings += currentCount;
+                droppedPostings += currentCount;
             } else {
-                keptPostings += currentCount;
+                if (currentCount > k) {
+                    cappedWords++;
+                    keptPostings += k;
+                    droppedPostings += (currentCount - k);
+                } else {
+                    keptPostings += currentCount;
+                }
             }
         }
 
@@ -206,6 +425,10 @@ public class RwiTopKReorgTool {
         System.out.println("Kept postings: " + keptPostings);
         System.out.println("Dropped postings: " + droppedPostings + " (" + percent(droppedPostings, totalPostings) + "%)");
         System.out.println("Words capped: " + cappedWords + " (" + percent(cappedWords, totalWords) + "%)");
+        if (!stopwordHashes.isEmpty()) {
+            System.out.println("Stopword words dropped: " + stopwordWords + " (" + percent(stopwordWords, totalWords) + "%)");
+            System.out.println("Stopword postings dropped: " + stopwordPostings + " (" + percent(stopwordPostings, totalPostings) + "%)");
+        }
 
         final long sourceBytes = directorySize(new File(dbPath));
         final long keptBytes = totalPostings == 0 ? 0 : Math.round((sourceBytes * (double) keptPostings) / totalPostings);
@@ -220,11 +443,14 @@ public class RwiTopKReorgTool {
     private static void applyReorg(
             final RocksDB sourceDb,
             final ColumnFamilyHandle sourceCf,
+            final String sourceCfName,
+            final List<byte[]> sourceCfNames,
             final int wordBytes,
             final int k,
             final boolean hostDiversity,
             final int maxPerHost,
-            final String shadowDbPath) throws Exception {
+            final String shadowDbPath,
+            final Set<String> stopwordHashes) throws Exception {
 
         System.out.println("=== APPLY: Creating shadow DB with Top-K=" + k + " ===");
         System.out.println("Host diversity: " + hostDiversity + ", maxPerHost=" + maxPerHost);
@@ -238,10 +464,18 @@ public class RwiTopKReorgTool {
 
         shadowDir.mkdirs();
 
-        final ColumnFamilyOptions cfOpts = new ColumnFamilyOptions();
         final List<ColumnFamilyDescriptor> shadowDesc = new ArrayList<>();
-        shadowDesc.add(new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, cfOpts));
-        shadowDesc.add(new ColumnFamilyDescriptor("default".getBytes(StandardCharsets.UTF_8), cfOpts));
+        boolean hasWordsCf = false;
+        for (final byte[] cfNameBytes : sourceCfNames) {
+            if (Arrays.equals(cfNameBytes, WORDS_CF_NAME)) {
+                hasWordsCf = true;
+            }
+            shadowDesc.add(new ColumnFamilyDescriptor(cfNameBytes.clone(), new ColumnFamilyOptions()));
+        }
+        if (!hasWordsCf) {
+            shadowDesc.add(new ColumnFamilyDescriptor(WORDS_CF_NAME.clone(), new ColumnFamilyOptions()));
+            System.out.println("Source DB has no 'words' CF. Creating 'words' CF in shadow DB.");
+        }
 
         final List<ColumnFamilyHandle> shadowHandles = new ArrayList<>();
         final DBOptions shadowDbOpts = new DBOptions()
@@ -251,12 +485,24 @@ public class RwiTopKReorgTool {
         try (RocksDB shadowDb = RocksDB.open(shadowDbOpts, shadowDbPath, shadowDesc, shadowHandles);
              WriteOptions wo = new WriteOptions().setDisableWAL(true)) {
 
-            final ColumnFamilyHandle shadowCf = shadowHandles.get(1); // "default"
+            final Map<String, ColumnFamilyHandle> shadowCfByName = new HashMap<>();
+            for (int i = 0; i < shadowDesc.size() && i < shadowHandles.size(); i++) {
+                final String name = new String(shadowDesc.get(i).getName(), StandardCharsets.UTF_8);
+                shadowCfByName.put(name, shadowHandles.get(i));
+            }
+
+            final ColumnFamilyHandle shadowCf = shadowCfByName.get(sourceCfName);
+            if (shadowCf == null) {
+                throw new IllegalStateException("Target CF not found in shadow DB: " + sourceCfName);
+            }
+            final ColumnFamilyHandle shadowWordsCf = shadowCfByName.get("words");
 
             long totalWords = 0;
             long totalPostings = 0;
             long keptPostings = 0;
             long droppedPostings = 0;
+            long stopwordWords = 0;
+            long stopwordPostings = 0;
 
             byte[] currentWord = null;
             final List<byte[]> currentKeys = new ArrayList<>();
@@ -283,13 +529,19 @@ public class RwiTopKReorgTool {
                         currentValues.add(it.value());
                     } else {
                         // process previous word
-                        processWord(shadowDb, shadowCf, wo, currentWord, currentKeys, currentValues, k, wordBytes, hostDiversity, maxPerHost);
+                        final boolean stopword = isStopwordHash(currentWord, stopwordHashes);
+                        if (stopword) {
+                            stopwordWords++;
+                            stopwordPostings += currentKeys.size();
+                        } else {
+                            processWord(shadowDb, shadowCf, shadowWordsCf, wo, currentWord, currentKeys, currentValues, k, wordBytes, hostDiversity, maxPerHost);
+                        }
                         
                         totalWords++;
                         totalPostings += currentKeys.size();
-                        final int kept = Math.min(currentKeys.size(), k);
+                        final int kept = stopword ? 0 : Math.min(currentKeys.size(), k);
                         keptPostings += kept;
-                        droppedPostings += Math.max(0, currentKeys.size() - k);
+                        droppedPostings += Math.max(0, currentKeys.size() - kept);
 
                         if (totalWords % 100000 == 0) {
                             System.out.println("Processed " + totalWords + " words, " + totalPostings + " postings...");
@@ -309,12 +561,18 @@ public class RwiTopKReorgTool {
 
             // finalize last word
             if (currentWord != null && !currentKeys.isEmpty()) {
-                processWord(shadowDb, shadowCf, wo, currentWord, currentKeys, currentValues, k, wordBytes, hostDiversity, maxPerHost);
+                final boolean stopword = isStopwordHash(currentWord, stopwordHashes);
+                if (stopword) {
+                    stopwordWords++;
+                    stopwordPostings += currentKeys.size();
+                } else {
+                    processWord(shadowDb, shadowCf, shadowWordsCf, wo, currentWord, currentKeys, currentValues, k, wordBytes, hostDiversity, maxPerHost);
+                }
                 totalWords++;
                 totalPostings += currentKeys.size();
-                final int kept = Math.min(currentKeys.size(), k);
+                final int kept = stopword ? 0 : Math.min(currentKeys.size(), k);
                 keptPostings += kept;
-                droppedPostings += Math.max(0, currentKeys.size() - k);
+                droppedPostings += Math.max(0, currentKeys.size() - kept);
             }
 
             System.out.println("=== Reorg Complete ===");
@@ -322,6 +580,10 @@ public class RwiTopKReorgTool {
             System.out.println("Total postings: " + totalPostings);
             System.out.println("Kept postings: " + keptPostings);
             System.out.println("Dropped postings: " + droppedPostings + " (" + percent(droppedPostings, totalPostings) + "%)");
+            if (!stopwordHashes.isEmpty()) {
+                System.out.println("Stopword words dropped: " + stopwordWords + " (" + percent(stopwordWords, totalWords) + "%)");
+                System.out.println("Stopword postings dropped: " + stopwordPostings + " (" + percent(stopwordPostings, totalPostings) + "%)");
+            }
 
             // compact
             System.out.println("Compacting shadow DB...");
@@ -342,6 +604,7 @@ public class RwiTopKReorgTool {
     private static void processWord(
             final RocksDB shadowDb,
             final ColumnFamilyHandle shadowCf,
+            final ColumnFamilyHandle shadowWordsCf,
             final WriteOptions wo,
             final byte[] word,
             final List<byte[]> keys,
@@ -354,6 +617,9 @@ public class RwiTopKReorgTool {
         if (keys.size() <= k) {
             // all postings fit, write as-is
             try (WriteBatch batch = new WriteBatch()) {
+                if (shadowWordsCf != null && !keys.isEmpty()) {
+                    batch.put(shadowWordsCf, word, new byte[0]);
+                }
                 for (int i = 0; i < keys.size(); i++) {
                     batch.put(shadowCf, keys.get(i), values.get(i));
                 }
@@ -382,6 +648,9 @@ public class RwiTopKReorgTool {
 
         // write selected postings
         try (WriteBatch batch = new WriteBatch()) {
+            if (shadowWordsCf != null && !selectedPostings.isEmpty()) {
+                batch.put(shadowWordsCf, word, new byte[0]);
+            }
             for (final ScoredPosting sp : selectedPostings) {
                 final byte[] key = new byte[wordBytes + sp.urlHash.length];
                 System.arraycopy(word, 0, key, 0, wordBytes);
@@ -523,6 +792,68 @@ public class RwiTopKReorgTool {
         if (bytes < 1024 * 1024) return String.format(Locale.ROOT, "%.2f KB", bytes / 1024.0);
         if (bytes < 1024 * 1024 * 1024) return String.format(Locale.ROOT, "%.2f MB", bytes / (1024.0 * 1024.0));
         return String.format(Locale.ROOT, "%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    private static boolean isStopwordHash(final byte[] wordHash, final Set<String> stopwordHashes) {
+        if (stopwordHashes == null || stopwordHashes.isEmpty() || wordHash == null) {
+            return false;
+        }
+        return stopwordHashes.contains(new String(wordHash, StandardCharsets.ISO_8859_1));
+    }
+
+    private static Set<String> loadStopwordHashes(final String stopwordFiles, final int wordBytes) throws IOException {
+        final Set<String> hashes = new HashSet<>();
+        if (stopwordFiles == null || stopwordFiles.trim().isEmpty()) {
+            return hashes;
+        }
+
+        final String[] files = stopwordFiles.split(",");
+        for (final String filePathRaw : files) {
+            final String filePath = filePathRaw == null ? "" : filePathRaw.trim();
+            if (filePath.isEmpty()) {
+                continue;
+            }
+            final Path path = new File(filePath).toPath();
+            if (!Files.exists(path)) {
+                System.err.println("Stopword file not found, skipped: " + filePath);
+                continue;
+            }
+
+            for (final String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+                if (line == null) {
+                    continue;
+                }
+                String trimmed = line.trim();
+                final int commentPos = trimmed.indexOf('|');
+                if (commentPos == 0) {
+                    continue;
+                }
+                if (commentPos > 0) {
+                    trimmed = trimmed.substring(0, commentPos).trim();
+                }
+                if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("|")) {
+                    continue;
+                }
+                final byte[] hash = Word.word2hash(trimmed.toLowerCase(Locale.ENGLISH));
+                if (hash != null && hash.length == wordBytes) {
+                    hashes.add(new String(hash, StandardCharsets.ISO_8859_1));
+                }
+            }
+        }
+        return hashes;
+    }
+
+    private static String defaultSolrStopwordFiles(final String language, final boolean explicitLang) {
+        final StringBuilder files = new StringBuilder("defaults/solr/stopwords.txt");
+
+        if (explicitLang) {
+            final String lang = (language == null || language.trim().isEmpty()) ? "en" : language.trim().toLowerCase(Locale.ROOT);
+            files.append(",defaults/solr/lang/stopwords_").append(lang).append(".txt");
+            return files.toString();
+        }
+        System.out.println("No --lang provided. Using only defaults/solr/stopwords.txt. "
+                + "For language-specific cleanup use --lang=<code>.");
+        return files.toString();
     }
 
     private static Map<String, String> parseArgs(final String[] args) {

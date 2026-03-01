@@ -35,7 +35,6 @@ import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.crawler.data.Cache;
 import net.yacy.crawler.data.ResultURLs;
 import net.yacy.kelondro.data.word.WordReference;
-import net.yacy.kelondro.rwi.IndexCell;
 import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.kelondro.util.MemoryControl;
 import net.yacy.peers.NewsPool;

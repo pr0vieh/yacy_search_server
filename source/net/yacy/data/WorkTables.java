@@ -48,7 +48,6 @@ import net.yacy.cora.date.GenericFormatter;
 import net.yacy.cora.document.encoding.ASCII;
 import net.yacy.cora.document.encoding.UTF8;
 import net.yacy.cora.document.id.DigestURL;
-import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.cora.document.id.MultiProtocolURL;
 import net.yacy.cora.order.Base64Order;
 import net.yacy.cora.protocol.ClientIdentification;
@@ -59,7 +58,7 @@ import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.cora.util.SpaceExceededException;
 import net.yacy.kelondro.blob.Tables;
 import net.yacy.kelondro.data.word.WordReference;
-import net.yacy.kelondro.rwi.IndexCell;
+import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.search.Switchboard;
 import net.yacy.server.serverObjects;
 
@@ -526,12 +525,11 @@ public class WorkTables extends Tables {
 
         // remove words from index
         if (indexCell != null) {
-            try {
-                for (final byte[] word: queryHashes) {
+            for (final byte[] word: queryHashes) {
+                try {
                     indexCell.removeDelayed(word, url.hash());
+                } catch (final IOException e) {
                 }
-            } catch (IOException e) {
-                ConcurrentLog.logException(e);
             }
         }
     }

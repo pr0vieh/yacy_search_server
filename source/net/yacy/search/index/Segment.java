@@ -86,6 +86,7 @@ import net.yacy.kelondro.util.Bitfield;
 import net.yacy.kelondro.util.ISO639;
 import net.yacy.kelondro.util.MemoryControl;
 import net.yacy.repository.LoaderDispatcher;
+import net.yacy.rocksdb.RocksDBIndexCellBackend;
 import net.yacy.search.Switchboard;
 import net.yacy.search.query.SearchEvent;
 import net.yacy.search.schema.CollectionConfiguration;
@@ -109,8 +110,8 @@ public class Segment {
     public static final long wCacheMaxAge    = 1000 * 60 * 30; // milliseconds; 30 minutes
     public static final int  wCacheMaxChunk  =  800;           // maximum number of references for each urlhash
     public static final int  lowcachedivisor =  900;
-    public static final long targetFileSize  = 32 * 1024 * 1024; // 32 MB - smaller files reduce heap pressure during loading
-    public static final int  writeBufferSize = 2 * 1024 * 1024; // 2 MB - reduced from 4 MB for lower memory footprint
+    public static final long targetFileSize  = 64 * 1024 * 1024; // 256 MB
+    public static final int  writeBufferSize = 4 * 1024 * 1024;
     public static final String termIndexName = "text.index";
     public static final String citationIndexName  = "citation.index";
     public static final String firstseenIndexName = "firstseen.index";
@@ -129,7 +130,6 @@ public class Segment {
     private         IndexTable                     firstSeenIndex;
     private         IndexTable                     loadTimeIndex;
     private         IODispatcher                   merger = null; // shared iodispatcher for kelondro indexes
-
     /**
      * create a new Segment
      * @param log logger instance
@@ -157,40 +157,15 @@ public class Segment {
     public void connectRWI(final int entityCacheMaxSize, final long maxFileSize) throws IOException {
         if (this.termIndex != null) return;
 
-        boolean useRocksDB = false;
-        final String rocksdbFlag = System.getProperty("index.rocksdb.enabled");
-        if (rocksdbFlag != null) {
-            useRocksDB = "true".equalsIgnoreCase(rocksdbFlag.trim());
-        } else {
-            final String legacyIndexRocksdb = System.getProperty("index.rocksdb");
-            if (legacyIndexRocksdb != null) {
-                useRocksDB = "true".equalsIgnoreCase(legacyIndexRocksdb.trim());
-            }
-        }
-
-        if (!useRocksDB) {
-            final String legacyRwiRocksdb = System.getProperty("rwi.rocksdb");
-            if (legacyRwiRocksdb != null) {
-                useRocksDB = "true".equalsIgnoreCase(legacyRwiRocksdb.trim());
-            }
-        }
-
-        if (!useRocksDB) {
-            final Switchboard sb = Switchboard.getSwitchboard();
-            if (sb != null) {
-                useRocksDB = sb.getConfigBool("index.rocksdb.enabled", false)
-                        || sb.getConfigBool("index.rocksdb", false)
-                        || sb.getConfigBool("rwi.rocksdb", false);
-            }
-        }
-
-        if (useRocksDB) {
-            this.termIndex = new net.yacy.rocksdb.RocksDBIndexCellBackend(new java.io.File(this.segmentPath, "rocksdb"));
+        if (isRocksBackendEnabled()) {
+            final File rocksDbPath = new File(this.segmentPath, "rocksdb");
+            this.termIndex = new RocksDBIndexCellBackend(rocksDbPath);
+            this.log.info("Connected RWI backend: rocksdb at " + rocksDbPath.getAbsolutePath());
             return;
         }
 
-        if (this.merger == null) {
-            this.merger = new IODispatcher(8, 16, writeBufferSize);
+        if (this.merger == null) { // init shared iodispatcher if none running
+            this.merger = new IODispatcher(2, 2, writeBufferSize);
             this.merger.start();
         }
         this.termIndex = new IndexCell<WordReference>(
@@ -204,6 +179,15 @@ public class Segment {
                         maxFileSize,
                         writeBufferSize,
                         this.merger);
+        this.log.info("Connected RWI backend: kelondro at " + new File(this.segmentPath, "default").getAbsolutePath());
+    }
+
+    private boolean isRocksBackendEnabled() {
+        final Switchboard sb = Switchboard.getSwitchboard();
+        if (sb != null) {
+            return sb.getConfigBool("index.rocksdb.enabled", false);
+        }
+        return Boolean.parseBoolean(System.getProperty("index.rocksdb.enabled", "false"));
     }
 
     public void disconnectRWI() {
@@ -220,7 +204,7 @@ public class Segment {
         if (this.urlCitationIndex != null) return;
 
         if (this.merger == null) { // init shared iodispatcher if none running
-            this.merger = new IODispatcher(8, 16, writeBufferSize);
+            this.merger = new IODispatcher(2,2,writeBufferSize);
             this.merger.start();
         }
         this.urlCitationIndex = new IndexCell<CitationReference>(
