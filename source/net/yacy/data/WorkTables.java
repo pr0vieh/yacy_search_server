@@ -58,7 +58,7 @@ import net.yacy.cora.util.ConcurrentLog;
 import net.yacy.cora.util.SpaceExceededException;
 import net.yacy.kelondro.blob.Tables;
 import net.yacy.kelondro.data.word.WordReference;
-import net.yacy.kelondro.rwi.IndexCell;
+import net.yacy.kelondro.rwi.IndexCellBackend;
 import net.yacy.search.Switchboard;
 import net.yacy.server.serverObjects;
 
@@ -521,12 +521,15 @@ public class WorkTables extends Tables {
         row.put(WorkTables.TABLE_API_COL_DATE_NEXT_EXEC, new Date(d));
     }
 
-    public void failURLsRegisterMissingWord(IndexCell<WordReference> indexCell, final DigestURL url, HandleSet queryHashes) {
+    public void failURLsRegisterMissingWord(IndexCellBackend<WordReference> indexCell, final DigestURL url, HandleSet queryHashes) {
 
         // remove words from index
         if (indexCell != null) {
             for (final byte[] word: queryHashes) {
-                indexCell.removeDelayed(word, url.hash());
+                try {
+                    indexCell.removeDelayed(word, url.hash());
+                } catch (final IOException e) {
+                }
             }
         }
     }

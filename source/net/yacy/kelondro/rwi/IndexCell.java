@@ -62,7 +62,7 @@ import net.yacy.search.Switchboard;
  * another BLOB file in the index array.
  */
 
-public final class IndexCell<ReferenceType extends Reference> extends AbstractBufferedIndex<ReferenceType> implements BufferedIndex<ReferenceType>, Iterable<ReferenceContainer<ReferenceType>> {
+public final class IndexCell<ReferenceType extends Reference> extends AbstractBufferedIndex<ReferenceType> implements IndexCellBackend<ReferenceType>, Iterable<ReferenceContainer<ReferenceType>> {
 
     private static final long cleanupCycle =  60000;
     private static final long dumpCycle    = 300000;

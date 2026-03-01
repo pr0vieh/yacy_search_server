@@ -1079,6 +1079,11 @@ indexDistribution.maxChunkFails = 1
 # a value of e.g. 100000 can improve stability and reduce load while searching very popular words
 index.maxReferences = 0
 
+# RocksDB RWI storage mode
+# posting = one key per (wordhash+urlhash)
+# blob    = one key per wordhash with packed reference metas (experimental)
+index.rocksdb.storage.mode = posting
+
 # Search sequence settings
 # collection:
 # time = time to get a RWI out of RAM cache, assortments and WORDS files
