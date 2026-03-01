@@ -213,6 +213,9 @@ public final class BlobWordUrlRefStorage implements WordUrlRefStorage {
 
     @Override
     public long size() {
+        final long estimated = estimateWordCount();
+        if (estimated >= 0L) return estimated;
+
         long total = 0L;
         try (final RocksIterator iterator = this.db.newIterator(this.readOptions)) {
             iterator.seekToFirst();
@@ -226,6 +229,9 @@ public final class BlobWordUrlRefStorage implements WordUrlRefStorage {
 
     @Override
     public boolean isEmpty() {
+        final long estimated = estimateWordCount();
+        if (estimated == 0L) return true;
+        if (estimated > 0L) return false;
         try (final RocksIterator iterator = this.db.newIterator(this.readOptions)) {
             iterator.seekToFirst();
             return !iterator.isValid();
@@ -234,6 +240,9 @@ public final class BlobWordUrlRefStorage implements WordUrlRefStorage {
 
     @Override
     public long distinctWordCount() {
+        final long estimated = estimateWordCount();
+        if (estimated >= 0L) return estimated;
+
         long count = 0L;
         try (final RocksIterator iterator = this.db.newIterator(this.readOptions)) {
             iterator.seekToFirst();
@@ -343,6 +352,15 @@ public final class BlobWordUrlRefStorage implements WordUrlRefStorage {
             return merged.toKelondroEntry().bytes();
         } catch (final Throwable e) {
             return right;
+        }
+    }
+
+    private long estimateWordCount() {
+        try {
+            final long estimated = this.db.getLongProperty("rocksdb.estimate-num-keys");
+            return Math.max(0L, estimated);
+        } catch (final Throwable e) {
+            return -1L;
         }
     }
 }
